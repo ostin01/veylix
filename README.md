@@ -1,7 +1,8 @@
 # Veylix API
 
-A first-draft FastAPI backend for managing fleets and vehicles. Data is held in
-PostgreSQL. Authentication, devices, and telemetry are not included yet.
+A first-draft FastAPI backend for managing fleets, vehicles, and telematics
+devices. Data is held in PostgreSQL. Authentication and telemetry ingestion
+are not included yet.
 
 ## Run with Docker Compose
 
@@ -71,8 +72,15 @@ All management endpoints use the `/api/v1` prefix.
 | `GET` | `/api/v1/vehicles/{vehicle_id}` | Get a vehicle |
 | `PATCH` | `/api/v1/vehicles/{vehicle_id}` | Partially update vehicle details or status |
 | `DELETE` | `/api/v1/vehicles/{vehicle_id}` | Delete a vehicle |
+| `POST` | `/api/v1/devices` | Register a device |
+| `GET` | `/api/v1/devices` | List devices (`page`, `page_size`, `vehicle_id`, `connection_status`, `search`, `sort_by`, `sort_order`) |
+| `GET` | `/api/v1/devices/{device_id}` | Get a device |
+| `PATCH` | `/api/v1/devices/{device_id}` | Update device metadata or connection state |
+| `POST` | `/api/v1/devices/{device_id}/assign` | Assign or reassign a device to a vehicle |
 
 Create operations return `201`; deletes return `204`. Missing resources return
 `404`, duplicate vehicle VINs or registration numbers return `409`, and a fleet
 with vehicles cannot be deleted. Vehicle status values are `active`, `inactive`,
-and `maintenance`.
+and `maintenance`. Device connection status values are `unknown`, `online`, and
+`offline`. Newly registered devices are unassigned and have no `last_seen_at`
+value until supplied through the API or updated by a future telemetry heartbeat.

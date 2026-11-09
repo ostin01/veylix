@@ -12,3 +12,9 @@ class VehicleType(str, Enum):
     HYBRID = "hybrid"
     PETROL = "petrol"
     DIESEL = "diesel"
+
+
+class DeviceConnectionStatus(str, Enum):
+    UNKNOWN = "unknown"
+    ONLINE = "online"
+    OFFLINE = "offline"

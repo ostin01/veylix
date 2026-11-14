@@ -10,6 +10,7 @@ import paho.mqtt.client as mqtt
 
 from simulator.registry import get_active_assignments
 from simulator.vehicle import SimulatedVehicle, create_simulated_vehicles
+from telemetry.mqtt_config import configure_mqtt_client
 from telemetry.protocol import telemetry_topic
 from telemetry.schemas import TelemetryMessage
 
@@ -39,7 +40,8 @@ def main() -> None:
         client_id="veylix-vehicle-simulator",
     )
     host = os.getenv("MQTT_HOST", "localhost")
-    port = int(os.getenv("MQTT_PORT", "1883"))
+    port = int(os.getenv("MQTT_PORT", "8883"))
+    configure_mqtt_client(client)
     client.connect(host, port, keepalive=30)
     client.loop_start()
 
@@ -56,15 +58,22 @@ def main() -> None:
         while not stop_event.is_set():
             started_at = time.monotonic()
             assignments = get_active_assignments()
-            new_assignments = [
-                (device_id, vehicle_id)
-                for device_id, vehicle_id in assignments
-                if (device_id, vehicle_id) not in vehicles_by_assignment
-            ]
+            new_assignments = []
+            for assignment in assignments:
+                device_id, vehicle_id, _, battery_voltage_range = assignment
+                vehicle = vehicles_by_assignment.get((device_id, vehicle_id))
+                if (
+                    vehicle is None
+                    or vehicle.battery_voltage_range != battery_voltage_range
+                ):
+                    new_assignments.append(assignment)
             for vehicle in create_simulated_vehicles(new_assignments, seed):
                 vehicles_by_assignment[(vehicle.device_id, vehicle.vehicle_id)] = vehicle
 
-            active_assignment_keys = set(assignments)
+            active_assignment_keys = {
+                (device_id, vehicle_id)
+                for device_id, vehicle_id, _, _ in assignments
+            }
             vehicles_by_assignment = {
                 key: vehicle
                 for key, vehicle in vehicles_by_assignment.items()
@@ -79,7 +88,7 @@ def main() -> None:
                 message_data = vehicle.step(interval)
                 message = TelemetryMessage.model_validate_json(json.dumps(message_data))
                 message.validate_timestamp()
-                topic = telemetry_topic(message.vehicle_id)
+                topic = telemetry_topic(vehicle.fleet_id, message.vehicle_id)
                 result = client.publish(
                     topic,
                     message.model_dump_json(),

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from db import SessionLocal
 from models import TelemetryDeadLetter, utc_now
 from telemetry.connectivity import mark_stale_devices_offline
+from telemetry.mqtt_config import configure_mqtt_client
 from telemetry.protocol import TELEMETRY_TOPIC_FILTER
 from telemetry.service import TelemetryRejected, ingest_telemetry
 
@@ -245,13 +246,14 @@ def stop_consumer(signum: int, frame: object) -> None:
 def main() -> None:
     stop_event.clear()
     host = os.getenv("MQTT_HOST", "localhost")
-    port = int(os.getenv("MQTT_PORT", "1883"))
+    port = int(os.getenv("MQTT_PORT", "8883"))
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         client_id="veylix-telemetry-consumer",
         clean_session=False,
         manual_ack=True,
     )
+    configure_mqtt_client(client)
     client.on_connect = on_connect
     client.on_message = on_message
     client.reconnect_delay_set(min_delay=1, max_delay=30)

@@ -25,9 +25,16 @@ class AlertRead(BaseModel):
     last_observed_at: datetime
     created_at: datetime
     acknowledged_at: datetime | None
+    acknowledged_by_id: UUID | None
     resolved_at: datetime | None
 
 
 class AlertListResponse(BaseModel):
     items: list[AlertRead]
     pagination: PaginationMeta
+
+
+class AlertSummary(BaseModel):
+    active_alerts: int
+    vehicles_with_active_alerts: int
+    active_by_severity: dict[AlertSeverity, int]

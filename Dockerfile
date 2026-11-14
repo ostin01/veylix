@@ -15,6 +15,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY alembic.ini ./
 COPY db.py enums.py main.py models.py ./
+COPY auth ./auth
 COPY migrations ./migrations
 COPY routes ./routes
 COPY schemas ./schemas

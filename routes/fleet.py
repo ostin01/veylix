@@ -7,6 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db import get_db
+from auth.security import require_roles
+from enums import UserRole
 from models import Fleet, Vehicle
 from schemas.common import PaginationMeta
 from schemas.fleet import FleetCreate, FleetListResponse, FleetRead, FleetUpdate
@@ -15,7 +17,12 @@ from schemas.fleet import FleetCreate, FleetListResponse, FleetRead, FleetUpdate
 router = APIRouter(prefix="/api/v1/fleets", tags=["fleets"])
 
 
-@router.post("", response_model=FleetRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=FleetRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def create_fleet(payload: FleetCreate, db: Session = Depends(get_db)) -> Fleet:
     fleet = Fleet(**payload.model_dump())
     db.add(fleet)
@@ -24,7 +31,13 @@ def create_fleet(payload: FleetCreate, db: Session = Depends(get_db)) -> Fleet:
     return fleet
 
 
-@router.get("", response_model=FleetListResponse)
+@router.get(
+    "",
+    response_model=FleetListResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def list_fleets(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -48,7 +61,13 @@ def list_fleets(
     )
 
 
-@router.get("/{fleet_id}", response_model=FleetRead)
+@router.get(
+    "/{fleet_id}",
+    response_model=FleetRead,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def get_fleet(fleet_id: UUID, db: Session = Depends(get_db)) -> Fleet:
     fleet = db.get(Fleet, fleet_id)
     if fleet is None:
@@ -56,7 +75,11 @@ def get_fleet(fleet_id: UUID, db: Session = Depends(get_db)) -> Fleet:
     return fleet
 
 
-@router.patch("/{fleet_id}", response_model=FleetRead)
+@router.patch(
+    "/{fleet_id}",
+    response_model=FleetRead,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def update_fleet(
     fleet_id: UUID,
     payload: FleetUpdate,
@@ -73,7 +96,11 @@ def update_fleet(
     return fleet
 
 
-@router.delete("/{fleet_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{fleet_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def delete_fleet(fleet_id: UUID, db: Session = Depends(get_db)) -> Response:
     fleet = db.get(Fleet, fleet_id)
     if fleet is None:

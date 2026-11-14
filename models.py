@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    JSON,
     Index,
     LargeBinary,
     String,
@@ -17,7 +18,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-from enums import AlertSeverity, DeviceConnectionStatus, VehicleStatus, VehicleType
+from enums import (
+    AlertSeverity,
+    DeviceConnectionStatus,
+    UserRole,
+    VehicleStatus,
+    VehicleType,
+)
 
 
 def utc_now() -> datetime:
@@ -39,6 +46,60 @@ class Fleet(Base):
     )
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    username: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(
+            UserRole,
+            name="user_role",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+    )
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+class DiagnosticProfile(Base):
+    __tablename__ = "diagnostic_profiles"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    vehicle_type: Mapped[VehicleType] = mapped_column(
+        Enum(
+            VehicleType,
+            name="profile_vehicle_type",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+    )
+    battery_configuration: Mapped[str] = mapped_column(String(100), nullable=False)
+    thresholds: Mapped[dict[str, dict[str, float]]] = mapped_column(JSON, nullable=False)
+    is_default: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
 class Vehicle(Base):
     __tablename__ = "vehicles"
     __table_args__ = (
@@ -48,6 +109,11 @@ class Vehicle(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     fleet_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("fleets.id", ondelete="RESTRICT"), nullable=False
+    )
+    diagnostic_profile_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("diagnostic_profiles.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     vin: Mapped[str | None] = mapped_column(String(17), nullable=True, unique=True)
@@ -135,6 +201,13 @@ Index(
     func.lower(Vehicle.registration_number),
     unique=True,
 )
+Index(
+    "uq_diagnostic_profiles_default_type",
+    DiagnosticProfile.vehicle_type,
+    unique=True,
+    postgresql_where=DiagnosticProfile.is_default.is_(True),
+    sqlite_where=DiagnosticProfile.is_default.is_(True),
+)
 Index("ix_devices_vehicle_id", Device.vehicle_id)
 Index("ix_devices_connection_status", Device.connection_status)
 Index("uq_devices_serial_number_lower", func.lower(Device.serial_number), unique=True)
@@ -171,7 +244,7 @@ class TelemetryReading(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
-    schema_version: Mapped[int] = mapped_column(nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
     message_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
 
@@ -209,6 +282,9 @@ class Alert(Base):
     )
     acknowledged_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    acknowledged_by_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

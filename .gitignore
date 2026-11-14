@@ -11,6 +11,7 @@ wheels/
 
 # Local configuration
 .env
+/secrets/
 
 # Test output
 .pytest_cache/

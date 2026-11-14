@@ -18,7 +18,7 @@ class TelemetryReadingRead(BaseModel):
     unit: str
     observed_at: datetime
     received_at: datetime
-    schema_version: int
+    schema_version: str
     message_id: UUID
 
 

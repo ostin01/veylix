@@ -8,7 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db import get_db
-from enums import DeviceConnectionStatus
+from auth.security import require_roles
+from enums import DeviceConnectionStatus, UserRole
 from models import Device, DeviceAssignment, Vehicle, utc_now
 from schemas.common import PaginationMeta
 from schemas.device import (
@@ -35,7 +36,12 @@ def _commit_device(db: Session) -> None:
         ) from error
 
 
-@router.post("", response_model=DeviceRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DeviceRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def create_device(payload: DeviceCreate, db: Session = Depends(get_db)) -> Device:
     if payload.vehicle_id is not None and db.get(Vehicle, payload.vehicle_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
@@ -63,7 +69,13 @@ def create_device(payload: DeviceCreate, db: Session = Depends(get_db)) -> Devic
     return device
 
 
-@router.get("", response_model=DeviceListResponse)
+@router.get(
+    "",
+    response_model=DeviceListResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def list_devices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -112,7 +124,13 @@ def list_devices(
     )
 
 
-@router.get("/{device_id}", response_model=DeviceRead)
+@router.get(
+    "/{device_id}",
+    response_model=DeviceRead,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def get_device(device_id: UUID, db: Session = Depends(get_db)) -> Device:
     device = db.get(Device, device_id)
     if device is None:
@@ -120,7 +138,13 @@ def get_device(device_id: UUID, db: Session = Depends(get_db)) -> Device:
     return device
 
 
-@router.get("/{device_id}/assignments", response_model=list[DeviceAssignmentRead])
+@router.get(
+    "/{device_id}/assignments",
+    response_model=list[DeviceAssignmentRead],
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def list_device_assignments(
     device_id: UUID,
     db: Session = Depends(get_db),
@@ -134,7 +158,11 @@ def list_device_assignments(
     ).all()
 
 
-@router.patch("/{device_id}", response_model=DeviceRead)
+@router.patch(
+    "/{device_id}",
+    response_model=DeviceRead,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def update_device(
     device_id: UUID,
     payload: DeviceUpdate,
@@ -151,7 +179,11 @@ def update_device(
     return device
 
 
-@router.post("/{device_id}/assign", response_model=DeviceRead)
+@router.post(
+    "/{device_id}/assign",
+    response_model=DeviceRead,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def assign_device(
     device_id: UUID,
     payload: DeviceAssign,
@@ -188,7 +220,11 @@ def assign_device(
     return device
 
 
-@router.delete("/{device_id}/assignment", response_model=DeviceRead)
+@router.delete(
+    "/{device_id}/assignment",
+    response_model=DeviceRead,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def unassign_device(device_id: UUID, db: Session = Depends(get_db)) -> Device:
     device = db.get(Device, device_id)
     if device is None:

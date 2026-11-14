@@ -27,156 +27,72 @@ def _number(signals: Mapping[str, object], name: str) -> float | None:
     return None
 
 
-def _above_threshold(
-    value: float | None,
-    warning_threshold: float,
-    critical_threshold: float,
-) -> AlertSeverity | None:
-    if value is None:
-        return None
-    if value > critical_threshold:
-        return AlertSeverity.CRITICAL
-    if value > warning_threshold:
-        return AlertSeverity.WARNING
-    return None
-
-
-def _below_threshold(
-    value: float | None,
-    warning_threshold: float,
-    critical_threshold: float,
-) -> AlertSeverity | None:
-    if value is None:
-        return None
-    if value < critical_threshold:
-        return AlertSeverity.CRITICAL
-    if value < warning_threshold:
-        return AlertSeverity.WARNING
-    return None
-
-
-def evaluate_diagnostics(signals: Mapping[str, object]) -> list[DiagnosticFinding]:
+def evaluate_diagnostics(
+    signals: Mapping[str, object],
+    thresholds: Mapping[str, Mapping[str, float]],
+) -> list[DiagnosticFinding]:
     findings: list[DiagnosticFinding] = []
+    metadata = {
+        "motor_temperature_c": ("motor_temperature_high", "Motor temperature"),
+        "battery_soc_percent": ("battery_soc_low", "Battery state of charge"),
+        "battery_voltage_v": ("battery_voltage_abnormal", "Battery voltage"),
+        "tire_pressure_psi": ("tire_pressure", "Tire pressure"),
+        "speed_kmh": ("speed_high", "Vehicle speed"),
+        "rpm": ("rpm_high", "Engine speed"),
+    }
 
-    def add_numeric(
-        code: str,
-        signal_name: str,
-        value: float | None,
-        severity: AlertSeverity | None,
-        threshold: str,
-        description: str,
-    ) -> None:
-        if value is not None and severity is not None:
-            findings.append(
-                DiagnosticFinding(
-                    code=code,
-                    signal_name=signal_name,
-                    severity=severity,
-                    message=f"{description}: {value:g} {SIGNAL_UNITS[signal_name]}",
-                    threshold=threshold,
-                    value_numeric=value,
-                    value_text=None,
-                    unit=SIGNAL_UNITS[signal_name],
-                )
+    for signal_name, raw_thresholds in thresholds.items():
+        if signal_name not in metadata:
+            raise ValueError(f"unsupported diagnostic signal: {signal_name}")
+        value = _number(signals, signal_name)
+        if value is None:
+            continue
+        critical_min = raw_thresholds.get("critical_min")
+        warning_min = raw_thresholds.get("warning_min")
+        warning_max = raw_thresholds.get("warning_max")
+        critical_max = raw_thresholds.get("critical_max")
+
+        direction: str | None = None
+        severity: AlertSeverity | None = None
+        if critical_min is not None and value < critical_min:
+            direction = "low"
+            severity = AlertSeverity.CRITICAL
+        elif critical_max is not None and value > critical_max:
+            direction = "high"
+            severity = AlertSeverity.CRITICAL
+        elif warning_min is not None and value < warning_min:
+            direction = "low"
+            severity = AlertSeverity.WARNING
+        elif warning_max is not None and value > warning_max:
+            direction = "high"
+            severity = AlertSeverity.WARNING
+        if severity is None or direction is None:
+            continue
+
+        code, description = metadata[signal_name]
+        if signal_name == "tire_pressure_psi":
+            code = f"{code}_{direction}"
+        unit = SIGNAL_UNITS[signal_name]
+        if direction == "low":
+            threshold = (
+                f"< {critical_min:g} {unit} critical; < {warning_min:g} {unit} warning"
             )
-
-    temperature = _number(signals, "motor_temperature_c")
-    add_numeric(
-        "motor_temperature_high",
-        "motor_temperature_c",
-        temperature,
-        _above_threshold(temperature, warning_threshold=100, critical_threshold=125),
-        "> 125 degC critical; > 100 degC warning",
-        "Motor temperature is above its operating range",
-    )
-
-    battery_soc = _number(signals, "battery_soc_percent")
-    add_numeric(
-        "battery_soc_low",
-        "battery_soc_percent",
-        battery_soc,
-        _below_threshold(battery_soc, warning_threshold=20, critical_threshold=10),
-        "< 10% critical; < 20% warning",
-        "Battery state of charge is low",
-    )
-
-    battery_voltage = _number(signals, "battery_voltage_v")
-    voltage_severity = None
-    voltage_threshold = (
-        "< 280 V or > 500 V critical; < 300 V or > 450 V warning"
-    )
-    if battery_voltage is not None:
-        if battery_voltage < 280 or battery_voltage > 500:
-            voltage_severity = AlertSeverity.CRITICAL
-        elif battery_voltage < 300 or battery_voltage > 450:
-            voltage_severity = AlertSeverity.WARNING
-    add_numeric(
-        "battery_voltage_abnormal",
-        "battery_voltage_v",
-        battery_voltage,
-        voltage_severity,
-        voltage_threshold,
-        "Battery voltage is outside its expected range",
-    )
-
-    tire_pressure = _number(signals, "tire_pressure_psi")
-    if tire_pressure is not None:
-        if tire_pressure < 25:
-            add_numeric(
-                "tire_pressure_low",
-                "tire_pressure_psi",
-                tire_pressure,
-                AlertSeverity.CRITICAL,
-                "< 25 psi critical; < 28 psi warning",
-                "Tire pressure is low",
+        else:
+            threshold = (
+                f"> {critical_max:g} {unit} critical; > {warning_max:g} {unit} warning"
             )
-        elif tire_pressure < 28:
-            add_numeric(
-                "tire_pressure_low",
-                "tire_pressure_psi",
-                tire_pressure,
-                AlertSeverity.WARNING,
-                "< 25 psi critical; < 28 psi warning",
-                "Tire pressure is low",
+        findings.append(
+            DiagnosticFinding(
+                code=code,
+                signal_name=signal_name,
+                severity=severity,
+                message=f"{description} is {direction}: {value:g} {unit}",
+                threshold=threshold,
+                value_numeric=value,
+                value_text=None,
+                unit=unit,
             )
-        elif tire_pressure > 48:
-            add_numeric(
-                "tire_pressure_high",
-                "tire_pressure_psi",
-                tire_pressure,
-                AlertSeverity.CRITICAL,
-                "> 48 psi critical; > 42 psi warning",
-                "Tire pressure is high",
-            )
-        elif tire_pressure > 42:
-            add_numeric(
-                "tire_pressure_high",
-                "tire_pressure_psi",
-                tire_pressure,
-                AlertSeverity.WARNING,
-                "> 48 psi critical; > 42 psi warning",
-                "Tire pressure is high",
-            )
-
-    speed = _number(signals, "speed_kmh")
-    add_numeric(
-        "speed_high",
-        "speed_kmh",
-        speed,
-        _above_threshold(speed, warning_threshold=160, critical_threshold=200),
-        "> 200 km/h critical; > 160 km/h warning",
-        "Vehicle speed is unusually high",
-    )
-
-    rpm = _number(signals, "rpm")
-    add_numeric(
-        "rpm_high",
-        "rpm",
-        rpm,
-        _above_threshold(rpm, warning_threshold=8000, critical_threshold=12000),
-        "> 12000 rpm critical; > 8000 rpm warning",
-        "Engine speed is unusually high",
-    )
+        )
 
     vehicle_state = signals.get("vehicle_state")
     if vehicle_state == "offline":
@@ -199,9 +115,10 @@ def evaluate_diagnostics(signals: Mapping[str, object]) -> list[DiagnosticFindin
 def build_vehicle_health(
     vehicle_id: UUID,
     latest_signals: Mapping[str, tuple[float | str, str, datetime]],
+    thresholds: Mapping[str, Mapping[str, float]],
 ) -> VehicleHealthResponse:
     values = {name: value for name, (value, _, _) in latest_signals.items()}
-    findings = evaluate_diagnostics(values)
+    findings = evaluate_diagnostics(values, thresholds)
     findings_by_signal = {finding.signal_name: finding for finding in findings}
     indicators: list[HealthIndicator] = []
 

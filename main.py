@@ -1,10 +1,16 @@
 from fastapi import FastAPI
-from routes import health
-from routes import fleet
-from routes import device
-from routes import alerts
-from routes import telemetry
-from routes import vehicle
+
+from routes import (
+    alerts,
+    auth,
+    device,
+    diagnostic_profiles,
+    fleet,
+    health,
+    telemetry,
+    users,
+    vehicle,
+)
 
 
 app = FastAPI(
@@ -19,6 +25,9 @@ def read_root():
     return {"Hello": "World"}
 
 app.include_router(health.router)
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(diagnostic_profiles.router)
 app.include_router(fleet.router)
 app.include_router(vehicle.router)
 app.include_router(device.router)

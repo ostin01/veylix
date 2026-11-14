@@ -1,0 +1,6 @@
+user veylix-simulator
+topic write healthcheck
+topic write veylix/v1/fleets/+/vehicles/+/telemetry
+
+user veylix-consumer
+topic read veylix/v1/fleets/+/vehicles/+/telemetry

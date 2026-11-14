@@ -2,11 +2,13 @@ import base64
 from math import ceil
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from auth.security import require_roles
 from db import get_db
+from enums import UserRole
 from models import TelemetryDeadLetter, TelemetryReading, Vehicle
 from schemas.common import PaginationMeta
 from schemas.dead_letter import (
@@ -18,6 +20,7 @@ from schemas.latest_telemetry import (
     LatestTelemetrySignal,
     VehicleLatestTelemetry,
 )
+from telemetry.service import TelemetryRejected, ingest_telemetry
 
 
 router = APIRouter(prefix="/api/v1/telemetry", tags=["telemetry"])
@@ -25,7 +28,13 @@ router = APIRouter(prefix="/api/v1/telemetry", tags=["telemetry"])
 LATEST_SIGNALS = ("latitude", "longitude", "speed_kmh", "battery_soc_percent")
 
 
-@router.get("/latest", response_model=LatestTelemetryResponse)
+@router.get(
+    "/latest",
+    response_model=LatestTelemetryResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def get_latest_telemetry(db: Session = Depends(get_db)) -> LatestTelemetryResponse:
     ranked_readings = (
         select(
@@ -89,7 +98,11 @@ def get_latest_telemetry(db: Session = Depends(get_db)) -> LatestTelemetryRespon
     )
 
 
-@router.get("/dead-letters", response_model=TelemetryDeadLetterListResponse)
+@router.get(
+    "/dead-letters",
+    response_model=TelemetryDeadLetterListResponse,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
 def list_telemetry_dead_letters(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -127,3 +140,50 @@ def list_telemetry_dead_letters(
             total_pages=ceil(total_items / page_size) if total_items else 0,
         ),
     )
+
+
+@router.post(
+    "/dead-letters/{dead_letter_id}/replay",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+def replay_telemetry_dead_letter(
+    dead_letter_id: UUID,
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    dead_letter = db.get(TelemetryDeadLetter, dead_letter_id)
+    if dead_letter is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter message not found",
+        )
+    try:
+        inserted = ingest_telemetry(db, dead_letter.topic, dead_letter.payload)
+    except TelemetryRejected as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Dead-letter message is still rejected: {error}",
+        ) from error
+    db.delete(dead_letter)
+    db.commit()
+    return {"inserted_signals": inserted}
+
+
+@router.delete(
+    "/dead-letters/{dead_letter_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+def delete_telemetry_dead_letter(
+    dead_letter_id: UUID,
+    db: Session = Depends(get_db),
+) -> Response:
+    dead_letter = db.get(TelemetryDeadLetter, dead_letter_id)
+    if dead_letter is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter message not found",
+        )
+    db.delete(dead_letter)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

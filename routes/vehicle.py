@@ -9,7 +9,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import DeviceAssignment, Fleet, TelemetryReading, Vehicle
+from auth.security import require_roles
+from enums import UserRole, VehicleType
+from models import (
+    DiagnosticProfile,
+    DeviceAssignment,
+    Fleet,
+    TelemetryReading,
+    Vehicle,
+)
 from schemas.common import PaginationMeta, build_pagination_meta
 from schemas.health import VehicleHealthResponse
 from schemas.telemetry import TelemetryReadingListResponse
@@ -65,20 +73,69 @@ def _commit_vehicle(db: Session) -> None:
         ) from error
 
 
-@router.post("", response_model=VehicleRead, status_code=status.HTTP_201_CREATED)
+def _resolve_diagnostic_profile(
+    db: Session,
+    vehicle_type: VehicleType,
+    profile_id: UUID | None,
+) -> UUID:
+    if profile_id is None:
+        profile = db.scalar(
+            select(DiagnosticProfile).where(
+                DiagnosticProfile.vehicle_type == vehicle_type,
+                DiagnosticProfile.is_default.is_(True),
+            )
+        )
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No default diagnostic profile is configured for this vehicle type",
+            )
+    else:
+        profile = db.get(DiagnosticProfile, profile_id)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Diagnostic profile not found",
+            )
+    if profile.vehicle_type != vehicle_type:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Diagnostic profile vehicle type does not match the vehicle",
+        )
+    return profile.id
+
+
+@router.post(
+    "",
+    response_model=VehicleRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def create_vehicle(payload: VehicleCreate, db: Session = Depends(get_db)) -> Vehicle:
     if db.get(Fleet, payload.fleet_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fleet not found")
     _check_unique_identifiers(db, payload)
 
-    vehicle = Vehicle(**payload.model_dump())
+    vehicle_data = payload.model_dump()
+    vehicle_data["diagnostic_profile_id"] = _resolve_diagnostic_profile(
+        db,
+        payload.vehicle_type,
+        payload.diagnostic_profile_id,
+    )
+    vehicle = Vehicle(**vehicle_data)
     db.add(vehicle)
     _commit_vehicle(db)
     db.refresh(vehicle)
     return vehicle
 
 
-@router.get("", response_model=VehicleListResponse)
+@router.get(
+    "",
+    response_model=VehicleListResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def list_vehicles(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -129,7 +186,13 @@ def list_vehicles(
     )
 
 
-@router.get("/{vehicle_id}", response_model=VehicleRead)
+@router.get(
+    "/{vehicle_id}",
+    response_model=VehicleRead,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def get_vehicle(vehicle_id: UUID, db: Session = Depends(get_db)) -> Vehicle:
     vehicle = db.get(Vehicle, vehicle_id)
     if vehicle is None:
@@ -137,7 +200,13 @@ def get_vehicle(vehicle_id: UUID, db: Session = Depends(get_db)) -> Vehicle:
     return vehicle
 
 
-@router.get("/{vehicle_id}/telemetry", response_model=TelemetryReadingListResponse)
+@router.get(
+    "/{vehicle_id}/telemetry",
+    response_model=TelemetryReadingListResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def list_vehicle_telemetry(
     vehicle_id: UUID,
     page: int = Query(default=1, ge=1),
@@ -194,12 +263,19 @@ def list_vehicle_telemetry(
     )
 
 
-@router.get("/{vehicle_id}/health", response_model=VehicleHealthResponse)
+@router.get(
+    "/{vehicle_id}/health",
+    response_model=VehicleHealthResponse,
+    dependencies=[
+        Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR, UserRole.VIEWER))
+    ],
+)
 def get_vehicle_health(
     vehicle_id: UUID,
     db: Session = Depends(get_db),
 ) -> VehicleHealthResponse:
-    if db.get(Vehicle, vehicle_id) is None:
+    vehicle = db.get(Vehicle, vehicle_id)
+    if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
 
     latest_readings = (
@@ -239,10 +315,20 @@ def get_vehicle_health(
         value = row.value_numeric if row.value_numeric is not None else row.value_text
         if value is not None:
             latest_signals[row.signal_name] = (value, row.unit, row.observed_at)
-    return build_vehicle_health(vehicle_id, latest_signals)
+    profile = db.get(DiagnosticProfile, vehicle.diagnostic_profile_id)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vehicle has no diagnostic profile configured",
+        )
+    return build_vehicle_health(vehicle_id, latest_signals, profile.thresholds)
 
 
-@router.patch("/{vehicle_id}", response_model=VehicleRead)
+@router.patch(
+    "/{vehicle_id}",
+    response_model=VehicleRead,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def update_vehicle(
     vehicle_id: UUID,
     payload: VehicleUpdate,
@@ -257,6 +343,13 @@ def update_vehicle(
     if fleet_id is not None and db.get(Fleet, fleet_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fleet not found")
     _check_unique_identifiers(db, payload, exclude_id=vehicle_id)
+    vehicle_type = changes.get("vehicle_type", vehicle.vehicle_type)
+    if "diagnostic_profile_id" in changes or vehicle_type != vehicle.vehicle_type:
+        changes["diagnostic_profile_id"] = _resolve_diagnostic_profile(
+            db,
+            vehicle_type,
+            changes.get("diagnostic_profile_id"),
+        )
 
     for field, value in changes.items():
         setattr(vehicle, field, value)
@@ -265,7 +358,11 @@ def update_vehicle(
     return vehicle
 
 
-@router.delete("/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{vehicle_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.OPERATOR))],
+)
 def delete_vehicle(vehicle_id: UUID, db: Session = Depends(get_db)) -> Response:
     vehicle = db.get(Vehicle, vehicle_id)
     if vehicle is None:

@@ -1,7 +1,10 @@
-.PHONY: dev-all down-all apply-migrations docker-up docker-down docker-logs
+.PHONY: dev-all prepare-local-security down-all apply-migrations docker-up docker-down docker-logs
 
-dev-all:
+dev-all: prepare-local-security
 	docker compose up --build -d
+
+prepare-local-security:
+	bash scripts/prepare-local-security.sh
 
 down-all:
 	docker compose down

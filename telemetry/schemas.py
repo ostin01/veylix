@@ -23,13 +23,16 @@ class TelemetrySignals(BaseModel):
 class TelemetryMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal[1]
+    schema_version: Literal["1.0"]
     message_id: UUID
     vehicle_id: UUID
     device_id: UUID
     observed_at: datetime
+    sent_at: datetime
     signals: TelemetrySignals
 
     def validate_timestamp(self) -> None:
-        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
-            raise ValueError("observed_at must include a timezone")
+        for field_name in ("observed_at", "sent_at"):
+            timestamp = getattr(self, field_name)
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                raise ValueError(f"{field_name} must include a timezone")

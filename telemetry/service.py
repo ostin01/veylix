@@ -6,7 +6,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from enums import DeviceConnectionStatus
-from models import Alert, Device, DeviceAssignment, TelemetryReading, Vehicle
+from models import (
+    Alert,
+    DiagnosticProfile,
+    Device,
+    DeviceAssignment,
+    TelemetryReading,
+    Vehicle,
+)
 from telemetry.constants import SIGNAL_UNITS
 from telemetry.health import evaluate_diagnostics
 from telemetry.protocol import parse_telemetry_topic
@@ -29,6 +36,7 @@ def _update_vehicle_alerts(
     device: Device,
     message: TelemetryMessage,
     received_at: datetime,
+    thresholds: dict[str, dict[str, float]],
 ) -> None:
     latest_observed_at = db.scalar(
         select(func.max(TelemetryReading.observed_at)).where(
@@ -40,7 +48,7 @@ def _update_vehicle_alerts(
     ):
         return
 
-    findings = evaluate_diagnostics(message.signals.model_dump())
+    findings = evaluate_diagnostics(message.signals.model_dump(), thresholds)
     findings_by_code = {finding.code: finding for finding in findings}
     active_alerts = db.scalars(
         select(Alert).where(
@@ -97,7 +105,7 @@ def parse_telemetry(payload: bytes) -> TelemetryMessage:
 def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
     message = parse_telemetry(payload)
     try:
-        topic_vehicle_id = parse_telemetry_topic(topic)
+        topic_fleet_id, topic_vehicle_id = parse_telemetry_topic(topic)
     except ValueError as error:
         raise TelemetryRejected(str(error)) from error
     if topic_vehicle_id != message.vehicle_id:
@@ -106,7 +114,13 @@ def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
     vehicle = db.get(Vehicle, message.vehicle_id)
     if vehicle is None:
         raise TelemetryRejected("vehicle is not registered")
-    device = db.get(Device, message.device_id)
+    if topic_fleet_id != vehicle.fleet_id:
+        raise TelemetryRejected("topic fleet ID does not match the vehicle fleet")
+    device = db.scalar(
+        select(Device)
+        .where(Device.id == message.device_id)
+        .with_for_update()
+    )
     if device is None:
         raise TelemetryRejected("device is not registered")
     if device.vehicle_id != vehicle.id:
@@ -120,6 +134,9 @@ def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
     )
     if active_assignment is None:
         raise TelemetryRejected("device assignment is not active")
+    profile = db.get(DiagnosticProfile, vehicle.diagnostic_profile_id)
+    if profile is None:
+        raise RuntimeError("vehicle has no diagnostic profile configured")
 
     existing_message = db.execute(
         select(TelemetryReading.vehicle_id, TelemetryReading.device_id)
@@ -151,9 +168,35 @@ def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
         )
 
     db.add_all(readings)
-    _update_vehicle_alerts(db, vehicle, device, message, received_at)
+    _update_vehicle_alerts(
+        db,
+        vehicle,
+        device,
+        message,
+        received_at,
+        profile.thresholds,
+    )
     device.connection_status = DeviceConnectionStatus.ONLINE
     device.last_seen_at = received_at
+    offline_devices = db.scalar(
+        select(func.count())
+        .select_from(Device)
+        .where(
+            Device.vehicle_id == vehicle.id,
+            Device.id != device.id,
+            Device.connection_status == DeviceConnectionStatus.OFFLINE,
+        )
+    )
+    if offline_devices == 0:
+        offline_alerts = db.scalars(
+            select(Alert).where(
+                Alert.vehicle_id == vehicle.id,
+                Alert.code == "device_offline",
+                Alert.resolved_at.is_(None),
+            )
+        ).all()
+        for alert in offline_alerts:
+            alert.resolved_at = received_at
     try:
         db.commit()
     except IntegrityError as error:

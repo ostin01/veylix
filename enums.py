@@ -23,3 +23,9 @@ class DeviceConnectionStatus(str, Enum):
 class AlertSeverity(str, Enum):
     WARNING = "warning"
     CRITICAL = "critical"
+
+
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    OPERATOR = "operator"
+    VIEWER = "viewer"

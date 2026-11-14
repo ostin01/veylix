@@ -9,8 +9,10 @@ from uuid import UUID, uuid4
 
 @dataclass
 class SimulatedVehicle:
+    fleet_id: UUID
     vehicle_id: UUID
     device_id: UUID
+    battery_voltage_range: tuple[float, float] | None
     latitude: float
     longitude: float
     seed: int
@@ -65,21 +67,28 @@ class SimulatedVehicle:
             target_temperature - self.motor_temperature_c
         ) * min(1.0, elapsed_seconds / 180)
 
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if self.battery_voltage_range is None:
+            battery_voltage = 12.6
+        else:
+            voltage_min, voltage_max = self.battery_voltage_range
+            battery_voltage = voltage_min + (
+                (voltage_max - voltage_min) * self.battery_soc_percent / 100
+            )
         return {
-            "schema_version": 1,
+            "schema_version": "1.0",
             "message_id": str(uuid4()),
             "vehicle_id": str(self.vehicle_id),
             "device_id": str(self.device_id),
-            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "observed_at": timestamp,
+            "sent_at": timestamp,
             "signals": {
                 "latitude": round(self.latitude, 6),
                 "longitude": round(self.longitude, 6),
                 "speed_kmh": round(self.speed_kmh, 2),
                 "odometer_km": round(self.odometer_km, 3),
                 "battery_soc_percent": round(self.battery_soc_percent, 2),
-                "battery_voltage_v": round(
-                    320 + self.battery_soc_percent * 0.8, 1
-                ),
+                "battery_voltage_v": round(battery_voltage, 1),
                 "motor_temperature_c": round(self.motor_temperature_c, 1),
                 "rpm": round(self.speed_kmh * 48),
                 "tire_pressure_psi": round(
@@ -91,20 +100,26 @@ class SimulatedVehicle:
 
 
 def create_simulated_vehicles(
-    assignments: Sequence[tuple[UUID, UUID]],
+    assignments: Sequence[
+        tuple[UUID, UUID, UUID, tuple[float, float] | None]
+    ],
     seed: int,
 ) -> list[SimulatedVehicle]:
     if len(assignments) > 100:
         raise ValueError("number of active assignments must not exceed 100")
-    if len({device_id for device_id, _ in assignments}) != len(assignments):
+    if len({device_id for device_id, _, _, _ in assignments}) != len(assignments):
         raise ValueError("each device can only have one active vehicle assignment")
 
     vehicles = []
-    for index, (device_id, vehicle_id) in enumerate(assignments):
+    for index, (device_id, vehicle_id, fleet_id, battery_voltage_range) in enumerate(
+        assignments
+    ):
         vehicles.append(
             SimulatedVehicle(
+                fleet_id=fleet_id,
                 vehicle_id=vehicle_id,
                 device_id=device_id,
+                battery_voltage_range=battery_voltage_range,
                 latitude=37.7749 + index * 0.01,
                 longitude=-122.4194 - index * 0.01,
                 seed=seed + index,

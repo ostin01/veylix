@@ -25,14 +25,28 @@ services:
         condition: service_healthy
     restart: "no"
 
+  bootstrap:
+    build: .
+    command: ["python", "-m", "auth.bootstrap"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run make prepare-local-security or configure JWT_SECRET_KEY}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:?Configure BOOTSTRAP_ADMIN_USERNAME}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Configure BOOTSTRAP_ADMIN_PASSWORD}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run make prepare-local-security or configure JWT_SECRET_KEY}
     ports:
       - "8000:8000"
     depends_on:
-      migrate:
+      bootstrap:
         condition: service_completed_successfully
     healthcheck:
       test:
@@ -51,10 +65,16 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
       MQTT_HOST: mqtt
-      MQTT_PORT: 1883
+      MQTT_PORT: 8883
+      MQTT_USERNAME: veylix-consumer
+      MQTT_PASSWORD_FILE: /run/secrets/mqtt_consumer_password
+      MQTT_TLS_CA_CERT: /run/secrets/mqtt_ca_cert
       TELEMETRY_MAX_ATTEMPTS: ${TELEMETRY_MAX_ATTEMPTS:-5}
       DEVICE_OFFLINE_AFTER_SECONDS: ${DEVICE_OFFLINE_AFTER_SECONDS:-60}
       DEVICE_OFFLINE_CHECK_INTERVAL_SECONDS: ${DEVICE_OFFLINE_CHECK_INTERVAL_SECONDS:-10}
+    secrets:
+      - mqtt_consumer_password
+      - mqtt_ca_cert
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -64,15 +84,31 @@ services:
 
   mqtt:
     image: eclipse-mosquitto:2
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        simulator_password="$$(cat /run/secrets/mqtt_simulator_password)"
+        consumer_password="$$(cat /run/secrets/mqtt_consumer_password)"
+        printf '%s\n%s\n' "$$simulator_password" "$$simulator_password" | mosquitto_passwd -c /mosquitto/data/passwordfile veylix-simulator
+        printf '%s\n%s\n' "$$consumer_password" "$$consumer_password" | mosquitto_passwd /mosquitto/data/passwordfile veylix-consumer
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
     ports:
-      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:8883:8883"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
       - mqtt_data:/mosquitto/data
+    secrets:
+      - mqtt_simulator_password
+      - mqtt_consumer_password
+      - mqtt_ca_cert
+      - mqtt_server_cert
+      - mqtt_server_key
     healthcheck:
       test:
         - CMD-SHELL
-        - "mosquitto_pub -h 127.0.0.1 -t healthcheck -m ok"
+        - "mosquitto_pub -h 127.0.0.1 -p 8883 --cafile /run/secrets/mqtt_ca_cert -u veylix-simulator -P \"$$(cat /run/secrets/mqtt_simulator_password)\" -t healthcheck -m ok"
       interval: 10s
       timeout: 5s
       retries: 5
@@ -84,9 +120,15 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
       MQTT_HOST: mqtt
-      MQTT_PORT: 1883
+      MQTT_PORT: 8883
+      MQTT_USERNAME: veylix-simulator
+      MQTT_PASSWORD_FILE: /run/secrets/mqtt_simulator_password
+      MQTT_TLS_CA_CERT: /run/secrets/mqtt_ca_cert
       SIMULATOR_PUBLISH_INTERVAL_SECONDS: 5
       SIMULATOR_RANDOM_SEED: 42
+    secrets:
+      - mqtt_simulator_password
+      - mqtt_ca_cert
     depends_on:
       mqtt:
         condition: service_healthy
@@ -99,3 +141,15 @@ services:
 volumes:
   postgres_data:
   mqtt_data:
+
+secrets:
+  mqtt_simulator_password:
+    file: ${MQTT_SIMULATOR_PASSWORD_FILE:-./secrets/mqtt/simulator_password}
+  mqtt_consumer_password:
+    file: ${MQTT_CONSUMER_PASSWORD_FILE:-./secrets/mqtt/consumer_password}
+  mqtt_ca_cert:
+    file: ${MQTT_CA_CERT_FILE:-./secrets/mqtt/ca.crt}
+  mqtt_server_cert:
+    file: ${MQTT_SERVER_CERT_FILE:-./secrets/mqtt/server.crt}
+  mqtt_server_key:
+    file: ${MQTT_SERVER_KEY_FILE:-./secrets/mqtt/server.key}

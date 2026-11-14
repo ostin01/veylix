@@ -10,8 +10,10 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.15.0",
     "fastapi[standard]>=0.162.2",
+    "PyJWT>=2.10.1",
     "paho-mqtt>=2.1.0",
     "psycopg[binary]>=3.2.0",
+    "pwdlib[argon2]>=0.2.1",
     "python-dotenv>=1.0.1",
     "sqlalchemy>=2.0.38",
 ]

@@ -9,23 +9,40 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from auth.security import hash_password
 from db import Base, get_db
-from enums import DeviceConnectionStatus
+from enums import DeviceConnectionStatus, UserRole
 from main import app
-from models import Device, TelemetryReading
+from models import Device, TelemetryReading, User
 from telemetry.connectivity import mark_stale_devices_offline
 from telemetry.consumer import store_dead_letter
+from telemetry.profile_defaults import seed_default_profiles
 from telemetry.service import TelemetryRejected, ingest_telemetry
 
 
+TEST_ADMIN_PASSWORD = "test-only-admin-password"
+TEST_ADMIN_PASSWORD_HASH = hash_password(TEST_ADMIN_PASSWORD)
+
+
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-only-jwt-secret-key-at-least-32-bytes")
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_default_profiles(session)
+        session.add(
+            User(
+                username="test-admin",
+                password_hash=TEST_ADMIN_PASSWORD_HASH,
+                role=UserRole.ADMIN,
+            )
+        )
+        session.commit()
 
     def override_get_db() -> Generator[Session, None, None]:
         with Session(engine, expire_on_commit=False) as session:
@@ -33,6 +50,17 @@ def client() -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
+        token_response = test_client.post(
+            "/api/v1/auth/token",
+            json={
+                "username": "test-admin",
+                "password": TEST_ADMIN_PASSWORD,
+            },
+        )
+        assert token_response.status_code == 200
+        test_client.headers.update(
+            {"Authorization": f"Bearer {token_response.json()['access_token']}"}
+        )
         yield test_client
     app.dependency_overrides.pop(get_db, None)
     Base.metadata.drop_all(engine)
@@ -65,6 +93,100 @@ def create_vehicle(
     )
     assert response.status_code == 201
     return response.json()
+
+
+def test_authentication_and_role_permissions(client: TestClient) -> None:
+    admin_headers = dict(client.headers)
+    client.headers.pop("Authorization")
+    assert client.get("/api/v1/fleets").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/users",
+            json={
+                "username": "public-admin",
+                "password": "unrestricted-admin-password",
+                "role": "admin",
+            },
+        ).status_code
+        == 401
+    )
+
+    created = client.post(
+        "/api/v1/users",
+        headers=admin_headers,
+        json={
+            "username": "read-only",
+            "password": "a-strong-test-password",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
+    assert "password_hash" not in created.json()
+
+    login = client.post(
+        "/api/v1/auth/token",
+        json={"username": "read-only", "password": "a-strong-test-password"},
+    )
+    assert login.status_code == 200
+    viewer_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/fleets", headers=viewer_headers).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/fleets",
+            headers=viewer_headers,
+            json={"name": "Viewer cannot create"},
+        ).status_code
+        == 403
+    )
+    operator = client.post(
+        "/api/v1/users",
+        headers=admin_headers,
+        json={
+            "username": "fleet-operator",
+            "password": "another-strong-password",
+            "role": "operator",
+        },
+    )
+    assert operator.status_code == 201
+    operator_login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "fleet-operator",
+            "password": "another-strong-password",
+        },
+    )
+    assert operator_login.status_code == 200
+    operator_headers = {
+        "Authorization": f"Bearer {operator_login.json()['access_token']}"
+    }
+    assert (
+        client.post(
+            "/api/v1/fleets",
+            headers=operator_headers,
+            json={"name": "Operator fleet"},
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/diagnostic-profiles",
+            headers=operator_headers,
+            json={},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/v1/users",
+            headers=viewer_headers,
+            json={
+                "username": "escalation",
+                "password": "another-strong-password",
+                "role": "admin",
+            },
+        ).status_code
+        == 403
+    )
 
 
 def test_fleet_and_vehicle_crud_persist_between_requests(client: TestClient) -> None:
@@ -302,11 +424,12 @@ def test_telemetry_is_validated_stored_idempotently_and_updates_device_status(
     assert device_response.status_code == 201
     device_id = device_response.json()["id"]
     message = {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "message_id": "fc3d08b0-0082-4c72-8b12-e7d15ae59a01",
         "vehicle_id": vehicle_id,
         "device_id": device_id,
         "observed_at": "2026-11-14T01:00:00Z",
+        "sent_at": "2026-11-14T01:00:01Z",
         "signals": {
             "latitude": 37.7749,
             "longitude": -122.4194,
@@ -320,7 +443,7 @@ def test_telemetry_is_validated_stored_idempotently_and_updates_device_status(
             "vehicle_state": "driving",
         },
     }
-    topic = f"veylix/v1/vehicles/{vehicle_id}/telemetry"
+    topic = f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry"
     payload = json.dumps(message).encode()
 
     db_generator = app.dependency_overrides[get_db]()
@@ -380,11 +503,12 @@ def test_telemetry_rejects_unregistered_or_mismatched_sender(client: TestClient)
     )
     device_id = device_response.json()["id"]
     message = {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "message_id": "fc3d08b0-0082-4c72-8b12-e7d15ae59a02",
         "vehicle_id": vehicle_id,
         "device_id": device_id,
         "observed_at": "2026-11-14T01:00:00Z",
+        "sent_at": "2026-11-14T01:00:01Z",
         "signals": {
             "latitude": 37.7749,
             "longitude": -122.4194,
@@ -405,14 +529,14 @@ def test_telemetry_rejects_unregistered_or_mismatched_sender(client: TestClient)
         with pytest.raises(TelemetryRejected, match="not currently assigned"):
             ingest_telemetry(
                 db,
-                f"veylix/v1/vehicles/{vehicle_id}/telemetry",
+                f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry",
                 json.dumps(message).encode(),
             )
         message["signals"]["latitude"] = 91
         with pytest.raises(TelemetryRejected, match="invalid telemetry payload"):
             ingest_telemetry(
                 db,
-                f"veylix/v1/vehicles/{vehicle_id}/telemetry",
+                f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry",
                 json.dumps(message).encode(),
             )
     finally:
@@ -451,7 +575,7 @@ def test_latest_telemetry_returns_latest_dashboard_signals_for_each_vehicle(
                     value_text=None,
                     unit="degrees",
                     observed_at=observed_at,
-                    schema_version=1,
+                    schema_version="1.0",
                     message_id=uuid4(),
                 ),
                 TelemetryReading(
@@ -462,7 +586,7 @@ def test_latest_telemetry_returns_latest_dashboard_signals_for_each_vehicle(
                     value_text=None,
                     unit="degrees",
                     observed_at=observed_at.replace(minute=5),
-                    schema_version=1,
+                    schema_version="1.0",
                     message_id=uuid4(),
                 ),
                 TelemetryReading(
@@ -473,7 +597,7 @@ def test_latest_telemetry_returns_latest_dashboard_signals_for_each_vehicle(
                     value_text=None,
                     unit="degrees",
                     observed_at=observed_at,
-                    schema_version=1,
+                    schema_version="1.0",
                     message_id=uuid4(),
                 ),
                 TelemetryReading(
@@ -484,7 +608,7 @@ def test_latest_telemetry_returns_latest_dashboard_signals_for_each_vehicle(
                     value_text=None,
                     unit="km/h",
                     observed_at=observed_at,
-                    schema_version=1,
+                    schema_version="1.0",
                     message_id=uuid4(),
                 ),
                 TelemetryReading(
@@ -495,7 +619,7 @@ def test_latest_telemetry_returns_latest_dashboard_signals_for_each_vehicle(
                     value_text=None,
                     unit="%",
                     observed_at=observed_at,
-                    schema_version=1,
+                    schema_version="1.0",
                     message_id=uuid4(),
                 ),
             ]
@@ -534,11 +658,12 @@ def test_vehicle_health_and_alerts_follow_latest_diagnostics(client: TestClient)
 
     def ingest(observed_at: datetime, signals: dict[str, object]) -> None:
         message = {
-            "schema_version": 1,
+            "schema_version": "1.0",
             "message_id": str(uuid4()),
             "vehicle_id": vehicle_id,
             "device_id": device_id,
             "observed_at": observed_at.isoformat(),
+            "sent_at": observed_at.isoformat(),
             "signals": signals,
         }
         db_generator = app.dependency_overrides[get_db]()
@@ -546,7 +671,7 @@ def test_vehicle_health_and_alerts_follow_latest_diagnostics(client: TestClient)
         try:
             ingest_telemetry(
                 db,
-                f"veylix/v1/vehicles/{vehicle_id}/telemetry",
+                f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry",
                 json.dumps(message).encode(),
             )
         finally:
@@ -593,10 +718,32 @@ def test_vehicle_health_and_alerts_follow_latest_diagnostics(client: TestClient)
     )
     assert acknowledged.status_code == 200
     acknowledged_at = acknowledged.json()["acknowledged_at"]
+    assert acknowledged.json()["acknowledged_by_id"] == client.get(
+        "/api/v1/auth/me"
+    ).json()["id"]
     assert acknowledged_at is not None
     assert client.post(
         f"/api/v1/alerts/{alerts_by_code['motor_temperature_high']['id']}/acknowledge"
     ).json()["acknowledged_at"] == acknowledged_at
+
+    summary = client.get("/api/v1/alerts/summary", params={"vehicle_id": vehicle_id})
+    assert summary.json() == {
+        "active_alerts": 4,
+        "vehicles_with_active_alerts": 1,
+        "active_by_severity": {"warning": 1, "critical": 3},
+    }
+    critical_alerts = client.get(
+        "/api/v1/alerts",
+        params={
+            "vehicle_id": vehicle_id,
+            "active": True,
+            "severity": "critical",
+            "sort_by": "severity",
+            "sort_order": "desc",
+        },
+    )
+    assert critical_alerts.status_code == 200
+    assert critical_alerts.json()["pagination"]["total_items"] == 3
 
     healthy_signals = {
         **baseline_signals,
@@ -611,6 +758,10 @@ def test_vehicle_health_and_alerts_follow_latest_diagnostics(client: TestClient)
         "/api/v1/alerts",
         params={"vehicle_id": vehicle_id, "active": True},
     ).json()["pagination"]["total_items"] == 0
+    assert client.get(
+        "/api/v1/alerts/summary",
+        params={"vehicle_id": vehicle_id},
+    ).json()["vehicles_with_active_alerts"] == 0
     history = client.get("/api/v1/alerts", params={"vehicle_id": vehicle_id}).json()
     assert len(history["items"]) == 4
     assert all(item["resolved_at"] is not None for item in history["items"])
@@ -620,11 +771,16 @@ def test_vehicle_health_and_alerts_follow_latest_diagnostics(client: TestClient)
 def test_connectivity_monitor_marks_only_stale_online_devices_offline(
     client: TestClient,
 ) -> None:
+    fleet_id = create_fleet(client)
+    vehicle_id = create_vehicle(client, fleet_id)["id"]
     device_ids = []
     for serial_number in ("TEL-STALE", "TEL-RECENT", "TEL-UNKNOWN"):
+        payload = {"serial_number": serial_number, "device_type": "telematics"}
+        if serial_number == "TEL-STALE":
+            payload["vehicle_id"] = vehicle_id
         response = client.post(
             "/api/v1/devices",
-            json={"serial_number": serial_number, "device_type": "telematics"},
+            json=payload,
         )
         assert response.status_code == 201
         device_ids.append(UUID(response.json()["id"]))
@@ -652,6 +808,14 @@ def test_connectivity_monitor_marks_only_stale_online_devices_offline(
         assert unknown.connection_status == DeviceConnectionStatus.UNKNOWN
     finally:
         db_generator.close()
+    active_alerts = client.get(
+        "/api/v1/alerts",
+        params={"vehicle_id": vehicle_id, "active": True},
+    )
+    assert active_alerts.status_code == 200
+    assert [item["code"] for item in active_alerts.json()["items"]] == [
+        "device_offline"
+    ]
 
 
 def test_dead_letter_endpoint_returns_quarantined_payload(client: TestClient) -> None:
@@ -660,7 +824,7 @@ def test_dead_letter_endpoint_returns_quarantined_payload(client: TestClient) ->
     try:
         store_dead_letter(
             db,
-            "veylix/v1/vehicles/invalid/telemetry",
+            "veylix/v1/fleets/invalid/vehicles/invalid/telemetry",
             b"\xffinvalid",
             "TelemetryRejected",
             "invalid payload",
@@ -669,7 +833,7 @@ def test_dead_letter_endpoint_returns_quarantined_payload(client: TestClient) ->
         db.commit()
         store_dead_letter(
             db,
-            "veylix/v1/vehicles/invalid/telemetry",
+            "veylix/v1/fleets/invalid/vehicles/invalid/telemetry",
             b"\xffinvalid",
             "TelemetryRejected",
             "invalid payload",
@@ -684,3 +848,157 @@ def test_dead_letter_endpoint_returns_quarantined_payload(client: TestClient) ->
     assert response.json()["pagination"]["total_items"] == 1
     assert response.json()["items"][0]["payload_base64"] == "/2ludmFsaWQ="
     assert response.json()["items"][0]["attempts"] == 3
+    dead_letter_id = response.json()["items"][0]["id"]
+    assert (
+        client.post(
+            f"/api/v1/telemetry/dead-letters/{dead_letter_id}/replay"
+        ).status_code
+        == 409
+    )
+    assert (
+        client.delete(f"/api/v1/telemetry/dead-letters/{dead_letter_id}").status_code
+        == 204
+    )
+    assert client.get("/api/v1/telemetry/dead-letters").json()["pagination"][
+        "total_items"
+    ] == 0
+
+
+def test_diagnostic_profile_thresholds_control_vehicle_health(
+    client: TestClient,
+) -> None:
+    fleet_id = create_fleet(client)
+    profile = client.post(
+        "/api/v1/diagnostic-profiles",
+        json={
+            "name": "Hybrid reserve profile",
+            "vehicle_type": "hybrid",
+            "battery_configuration": "custom high-voltage",
+            "thresholds": {
+                "battery_soc_percent": {
+                    "warning_min": 60,
+                    "critical_min": 30,
+                }
+            },
+        },
+    )
+    assert profile.status_code == 201
+    vehicle_id = create_vehicle(client, fleet_id)["id"]
+    update = client.patch(
+        f"/api/v1/vehicles/{vehicle_id}",
+        json={"diagnostic_profile_id": profile.json()["id"]},
+    )
+    assert update.status_code == 200
+    assert update.json()["diagnostic_profile_id"] == profile.json()["id"]
+
+    device = client.post(
+        "/api/v1/devices",
+        json={
+            "serial_number": "TEL-CUSTOM-PROFILE",
+            "device_type": "telematics",
+            "vehicle_id": vehicle_id,
+        },
+    )
+    assert device.status_code == 201
+    message = {
+        "schema_version": "1.0",
+        "message_id": str(uuid4()),
+        "vehicle_id": vehicle_id,
+        "device_id": device.json()["id"],
+        "observed_at": "2026-11-14T01:00:00Z",
+        "sent_at": "2026-11-14T01:00:01Z",
+        "signals": {
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "speed_kmh": 42.5,
+            "odometer_km": 12500.5,
+            "battery_soc_percent": 50.0,
+            "battery_voltage_v": 387.9,
+            "motor_temperature_c": 57.6,
+            "rpm": 2040,
+            "tire_pressure_psi": 35.1,
+            "vehicle_state": "driving",
+        },
+    }
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    try:
+        ingest_telemetry(
+            db,
+            f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry",
+            json.dumps(message).encode(),
+        )
+    finally:
+        db_generator.close()
+
+    health = client.get(f"/api/v1/vehicles/{vehicle_id}/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "warning"
+    battery_indicator = next(
+        item
+        for item in health.json()["indicators"]
+        if item["signal_name"] == "battery_soc_percent"
+    )
+    assert battery_indicator["status"] == "warning"
+    assert "60" in battery_indicator["threshold"]
+
+
+def test_dead_letter_replay_ingests_and_removes_valid_message(
+    client: TestClient,
+) -> None:
+    fleet_id = create_fleet(client)
+    vehicle_id = create_vehicle(client, fleet_id)["id"]
+    device = client.post(
+        "/api/v1/devices",
+        json={
+            "serial_number": "TEL-REPLAY",
+            "device_type": "telematics",
+            "vehicle_id": vehicle_id,
+        },
+    )
+    assert device.status_code == 201
+    message = {
+        "schema_version": "1.0",
+        "message_id": str(uuid4()),
+        "vehicle_id": vehicle_id,
+        "device_id": device.json()["id"],
+        "observed_at": "2026-11-14T01:00:00Z",
+        "sent_at": "2026-11-14T01:00:01Z",
+        "signals": {
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "speed_kmh": 42.5,
+            "odometer_km": 12500.5,
+            "battery_soc_percent": 84.9,
+            "battery_voltage_v": 387.9,
+            "motor_temperature_c": 57.6,
+            "rpm": 2040,
+            "tire_pressure_psi": 35.1,
+            "vehicle_state": "driving",
+        },
+    }
+    topic = f"veylix/v1/fleets/{fleet_id}/vehicles/{vehicle_id}/telemetry"
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    try:
+        store_dead_letter(
+            db,
+            topic,
+            json.dumps(message).encode(),
+            "RuntimeError",
+            "temporary failure",
+            attempts=1,
+        )
+        db.commit()
+    finally:
+        db_generator.close()
+
+    dead_letter = client.get("/api/v1/telemetry/dead-letters").json()["items"][0]
+    replay = client.post(
+        f"/api/v1/telemetry/dead-letters/{dead_letter['id']}/replay"
+    )
+    assert replay.status_code == 200
+    assert replay.json() == {"inserted_signals": 10}
+    assert client.get("/api/v1/telemetry/dead-letters").json()["pagination"][
+        "total_items"
+    ] == 0

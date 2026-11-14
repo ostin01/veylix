@@ -12,6 +12,8 @@ WORKDIR /app
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
+COPY db.py enums.py models.py ./
+COPY schemas ./schemas
 COPY simulator ./simulator
 
 RUN useradd --create-home --uid 10001 app

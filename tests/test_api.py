@@ -1,4 +1,6 @@
 from collections.abc import Generator
+import json
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +10,8 @@ from sqlalchemy.pool import StaticPool
 
 from db import Base, get_db
 from main import app
+from models import Device, TelemetryReading
+from telemetry.service import TelemetryRejected, ingest_telemetry
 
 
 @pytest.fixture
@@ -276,3 +280,111 @@ def test_device_duplicate_serial_and_invalid_assignments(client: TestClient) -> 
     assert invalid_assignment.status_code == 404
     assert client.get(f"/api/v1/devices/{device_id}").json()["vehicle_id"] is None
     assert client.get(f"/api/v1/devices/{device_id}/assignments").json() == []
+
+
+def test_telemetry_is_validated_stored_idempotently_and_updates_device_status(
+    client: TestClient,
+) -> None:
+    fleet_id = create_fleet(client)
+    vehicle_id = create_vehicle(client, fleet_id)["id"]
+    device_response = client.post(
+        "/api/v1/devices",
+        json={
+            "serial_number": "TEL-TELEMETRY",
+            "device_type": "telematics",
+            "vehicle_id": vehicle_id,
+        },
+    )
+    assert device_response.status_code == 201
+    device_id = device_response.json()["id"]
+    message = {
+        "schema_version": 1,
+        "message_id": "fc3d08b0-0082-4c72-8b12-e7d15ae59a01",
+        "vehicle_id": vehicle_id,
+        "device_id": device_id,
+        "observed_at": "2026-11-14T01:00:00Z",
+        "signals": {
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "speed_kmh": 42.5,
+            "odometer_km": 12500.5,
+            "battery_soc_percent": 84.9,
+            "battery_voltage_v": 387.9,
+            "motor_temperature_c": 57.6,
+            "rpm": 2040,
+            "tire_pressure_psi": 35.1,
+            "vehicle_state": "driving",
+        },
+    }
+    topic = f"veylix/v1/vehicles/{vehicle_id}/telemetry"
+    payload = json.dumps(message).encode()
+
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    try:
+        assert ingest_telemetry(db, topic, payload) == 10
+        assert ingest_telemetry(db, topic, payload) == 0
+        readings = db.query(TelemetryReading).all()
+        assert len(readings) == 10
+        speed = next(reading for reading in readings if reading.signal_name == "speed_kmh")
+        assert speed.value_numeric == 42.5
+        assert speed.value_text is None
+        assert speed.unit == "km/h"
+        state = next(reading for reading in readings if reading.signal_name == "vehicle_state")
+        assert state.value_text == "driving"
+        assert state.value_numeric is None
+        device = db.get(Device, UUID(device_id))
+        assert device is not None
+        assert device.connection_status.value == "online"
+        assert device.last_seen_at is not None
+    finally:
+        db_generator.close()
+    assert client.delete(f"/api/v1/vehicles/{vehicle_id}").status_code == 409
+
+
+def test_telemetry_rejects_unregistered_or_mismatched_sender(client: TestClient) -> None:
+    fleet_id = create_fleet(client)
+    vehicle_id = create_vehicle(client, fleet_id)["id"]
+    device_response = client.post(
+        "/api/v1/devices",
+        json={"serial_number": "TEL-UNASSIGNED", "device_type": "telematics"},
+    )
+    device_id = device_response.json()["id"]
+    message = {
+        "schema_version": 1,
+        "message_id": "fc3d08b0-0082-4c72-8b12-e7d15ae59a02",
+        "vehicle_id": vehicle_id,
+        "device_id": device_id,
+        "observed_at": "2026-11-14T01:00:00Z",
+        "signals": {
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "speed_kmh": 42.5,
+            "odometer_km": 12500.5,
+            "battery_soc_percent": 84.9,
+            "battery_voltage_v": 387.9,
+            "motor_temperature_c": 57.6,
+            "rpm": 2040,
+            "tire_pressure_psi": 35.1,
+            "vehicle_state": "driving",
+        },
+    }
+
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    try:
+        with pytest.raises(TelemetryRejected, match="not currently assigned"):
+            ingest_telemetry(
+                db,
+                f"veylix/v1/vehicles/{vehicle_id}/telemetry",
+                json.dumps(message).encode(),
+            )
+        message["signals"]["latitude"] = 91
+        with pytest.raises(TelemetryRejected, match="invalid telemetry payload"):
+            ingest_telemetry(
+                db,
+                f"veylix/v1/vehicles/{vehicle_id}/telemetry",
+                json.dumps(message).encode(),
+            )
+    finally:
+        db_generator.close()

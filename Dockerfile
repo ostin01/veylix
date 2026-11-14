@@ -18,6 +18,7 @@ COPY db.py enums.py main.py models.py ./
 COPY migrations ./migrations
 COPY routes ./routes
 COPY schemas ./schemas
+COPY telemetry ./telemetry
 
 RUN useradd --create-home --uid 10001 app
 USER app

@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     String,
     Uuid,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -143,3 +144,30 @@ Index(
     postgresql_where=DeviceAssignment.unassigned_at.is_(None),
     sqlite_where=DeviceAssignment.unassigned_at.is_(None),
 )
+
+
+class TelemetryReading(Base):
+    __tablename__ = "telemetry_readings"
+    __table_args__ = (
+        UniqueConstraint("message_id", "signal_name", name="uq_telemetry_message_signal"),
+        Index("ix_telemetry_vehicle_observed_at", "vehicle_id", "observed_at"),
+        Index("ix_telemetry_signal_observed_at", "signal_name", "observed_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    vehicle_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("vehicles.id", ondelete="RESTRICT"), nullable=False
+    )
+    device_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("devices.id", ondelete="RESTRICT"), nullable=False
+    )
+    signal_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    value_numeric: Mapped[float | None] = mapped_column(nullable=True)
+    value_text: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    schema_version: Mapped[int] = mapped_column(nullable=False)
+    message_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)

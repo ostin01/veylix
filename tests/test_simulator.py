@@ -45,24 +45,31 @@ def test_simulated_vehicle_emits_valid_correlated_signals() -> None:
     assert 20 <= signals["tire_pressure_psi"] <= 50
 
 
-def test_simulator_ids_are_stable_and_unique() -> None:
-    first = create_simulated_vehicles(3, seed=10)
-    again = create_simulated_vehicles(3, seed=10)
-
-    assert [vehicle.vehicle_id for vehicle in first] == [
-        vehicle.vehicle_id for vehicle in again
+def test_simulator_uses_registered_device_vehicle_assignments() -> None:
+    assignments = [
+        (UUID(int=1), UUID(int=11)),
+        (UUID(int=2), UUID(int=12)),
     ]
-    assert len({vehicle.vehicle_id for vehicle in first}) == 3
-    assert len({vehicle.device_id for vehicle in first}) == 3
+    vehicles = create_simulated_vehicles(assignments, seed=10)
 
-
-@pytest.mark.parametrize("count", [0, 101])
-def test_simulator_rejects_invalid_vehicle_count(count: int) -> None:
+    assert [(vehicle.device_id, vehicle.vehicle_id) for vehicle in vehicles] == assignments
     with pytest.raises(ValueError):
-        create_simulated_vehicles(count, seed=0)
+        create_simulated_vehicles([(UUID(int=1), UUID(int=11))] * 101, seed=0)
+
+
+def test_simulator_rejects_duplicate_device_assignments() -> None:
+    device_id = UUID(int=1)
+    with pytest.raises(ValueError):
+        create_simulated_vehicles(
+            [(device_id, UUID(int=11)), (device_id, UUID(int=12))],
+            seed=0,
+        )
 
 
 def test_simulator_rejects_nonpositive_elapsed_time() -> None:
-    vehicle = create_simulated_vehicles(1, seed=0)[0]
+    vehicle = create_simulated_vehicles(
+        [(UUID(int=1), UUID(int=11))],
+        seed=0,
+    )[0]
     with pytest.raises(ValueError):
         vehicle.step(0)

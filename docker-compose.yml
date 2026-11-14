@@ -45,6 +45,20 @@ services:
       retries: 5
       start_period: 5s
 
+  telemetry-consumer:
+    build: .
+    command: ["python", "-m", "telemetry.consumer"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      MQTT_HOST: mqtt
+      MQTT_PORT: 1883
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
+
   mqtt:
     image: eclipse-mosquitto:2
     ports:
@@ -64,14 +78,18 @@ services:
       context: .
       dockerfile: vehicle-simulator/Dockerfile
     environment:
+      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
       MQTT_HOST: mqtt
       MQTT_PORT: 1883
-      SIMULATOR_VEHICLE_COUNT: 3
       SIMULATOR_PUBLISH_INTERVAL_SECONDS: 5
       SIMULATOR_RANDOM_SEED: 42
     depends_on:
       mqtt:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      telemetry-consumer:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

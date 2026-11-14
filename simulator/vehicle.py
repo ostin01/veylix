@@ -2,8 +2,9 @@ import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from typing import Literal
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 
 @dataclass
@@ -89,19 +90,21 @@ class SimulatedVehicle:
         }
 
 
-def create_simulated_vehicles(count: int, seed: int) -> list[SimulatedVehicle]:
-    if count < 1:
-        raise ValueError("count must be at least 1")
-    if count > 100:
-        raise ValueError("count must not exceed 100")
+def create_simulated_vehicles(
+    assignments: Sequence[tuple[UUID, UUID]],
+    seed: int,
+) -> list[SimulatedVehicle]:
+    if len(assignments) > 100:
+        raise ValueError("number of active assignments must not exceed 100")
+    if len({device_id for device_id, _ in assignments}) != len(assignments):
+        raise ValueError("each device can only have one active vehicle assignment")
 
-    namespace = UUID("b962b266-f4a4-4a14-9f2d-c504f230895f")
     vehicles = []
-    for index in range(count):
+    for index, (device_id, vehicle_id) in enumerate(assignments):
         vehicles.append(
             SimulatedVehicle(
-                vehicle_id=uuid5(namespace, f"vehicle-{index + 1}"),
-                device_id=uuid5(namespace, f"device-{index + 1}"),
+                vehicle_id=vehicle_id,
+                device_id=device_id,
                 latitude=37.7749 + index * 0.01,
                 longitude=-122.4194 - index * 0.01,
                 seed=seed + index,

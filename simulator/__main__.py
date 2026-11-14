@@ -4,10 +4,12 @@ import os
 import signal
 import threading
 import time
+from uuid import UUID
 
 import paho.mqtt.client as mqtt
 
-from simulator.vehicle import create_simulated_vehicles
+from simulator.registry import get_active_assignments
+from simulator.vehicle import SimulatedVehicle, create_simulated_vehicles
 
 
 logging.basicConfig(
@@ -24,13 +26,12 @@ def stop_simulator(signum: int, frame: object) -> None:
 
 
 def main() -> None:
-    count = int(os.getenv("SIMULATOR_VEHICLE_COUNT", "3"))
     interval = float(os.getenv("SIMULATOR_PUBLISH_INTERVAL_SECONDS", "5"))
     seed = int(os.getenv("SIMULATOR_RANDOM_SEED", "42"))
     if interval <= 0:
         raise ValueError("SIMULATOR_PUBLISH_INTERVAL_SECONDS must be positive")
 
-    vehicles = create_simulated_vehicles(count, seed)
+    vehicles_by_assignment: dict[tuple[UUID, UUID], SimulatedVehicle] = {}
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         client_id="veylix-vehicle-simulator",
@@ -43,8 +44,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop_simulator)
     signal.signal(signal.SIGTERM, stop_simulator)
     logger.info(
-        "Simulating %d vehicles; publishing to MQTT broker %s:%d every %.1fs",
-        len(vehicles),
+        "Publishing assigned vehicles to MQTT broker %s:%d every %.1fs",
         host,
         port,
         interval,
@@ -53,7 +53,27 @@ def main() -> None:
     try:
         while not stop_event.is_set():
             started_at = time.monotonic()
-            for vehicle in vehicles:
+            assignments = get_active_assignments()
+            new_assignments = [
+                (device_id, vehicle_id)
+                for device_id, vehicle_id in assignments
+                if (device_id, vehicle_id) not in vehicles_by_assignment
+            ]
+            for vehicle in create_simulated_vehicles(new_assignments, seed):
+                vehicles_by_assignment[(vehicle.device_id, vehicle.vehicle_id)] = vehicle
+
+            active_assignment_keys = set(assignments)
+            vehicles_by_assignment = {
+                key: vehicle
+                for key, vehicle in vehicles_by_assignment.items()
+                if key in active_assignment_keys
+            }
+            if not vehicles_by_assignment:
+                logger.info("No assigned devices found; waiting for vehicle/device assignments")
+                stop_event.wait(interval)
+                continue
+
+            for vehicle in vehicles_by_assignment.values():
                 message = vehicle.step(interval)
                 topic = f"veylix/v1/vehicles/{vehicle.vehicle_id}/telemetry"
                 result = client.publish(

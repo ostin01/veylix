@@ -1,26 +1,29 @@
 # Veylix API
 
-A first-draft FastAPI backend for managing fleets, vehicles, and telematics
-devices. Data is held in PostgreSQL. Authentication and telemetry ingestion
-are not included yet.
+A FastAPI backend for managing fleets, vehicles, and telematics devices.
+PostgreSQL stores application and validated telemetry data. Authentication is
+not included yet.
 
 ## Run with Docker Compose
 
-Docker Compose builds the API and simulator, starts PostgreSQL and the local
-MQTT broker, applies migrations, then starts the API and three simulated
-vehicles:
+Docker Compose builds the API, telemetry consumer, and simulator; starts
+PostgreSQL and the local MQTT broker; applies migrations; then starts the
+services. The simulator publishes only for devices currently assigned to
+registered vehicles:
 
 ```bash
 make dev-all
 ```
 
-Open `http://127.0.0.1:8000/docs` to try the API. The simulator publishes
-synthetic telemetry every five seconds to topics such as
-`veylix/v1/vehicles/{vehicle_id}/telemetry`. The local MQTT broker listens on
-`localhost:1883`. Each JSON message includes generated vehicle/device IDs,
-`observed_at`, and signals for GPS position, speed, odometer, battery charge
-and voltage, motor temperature, RPM, tire pressure, and parked/driving state.
-Inspect one message with:
+Create a fleet, vehicle, and device in `http://127.0.0.1:8000/docs`, and assign
+the device to that vehicle. The simulator discovers active assignments from
+PostgreSQL and publishes synthetic telemetry every five seconds to
+`veylix/v1/vehicles/{vehicle_id}/telemetry`. The consumer validates the
+registered vehicle/device and active assignment, then stores one row per
+signal in PostgreSQL. Accepted telemetry updates the device connection status
+to `online` and its `last_seen_at` timestamp.
+
+The local MQTT broker listens on `localhost:1883`. Inspect a message with:
 
 ```bash
 docker compose exec mqtt mosquitto_sub -h localhost -t "veylix/v1/vehicles/+/telemetry" -v -C 1
@@ -33,9 +36,10 @@ docker compose logs -f simulator
 make down-all
 ```
 
-The simulator currently generates demo vehicle/device IDs; it does not create
-database records or feed telemetry into the API yet. MQTT ingestion and linking
-simulated IDs to registered vehicles/devices are a future step.
+Only registered and assigned devices publish; no demo database records are
+created automatically. Invalid or unassigned messages are rejected and logged.
+Telemetry readings are persisted, but a telemetry retrieval endpoint is not
+implemented yet.
 
 `make down-all` preserves the PostgreSQL data volume. To remove the database
 and all its data, run `docker compose down --volumes`.

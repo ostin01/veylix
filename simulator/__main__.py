@@ -10,6 +10,8 @@ import paho.mqtt.client as mqtt
 
 from simulator.registry import get_active_assignments
 from simulator.vehicle import SimulatedVehicle, create_simulated_vehicles
+from telemetry.protocol import telemetry_topic
+from telemetry.schemas import TelemetryMessage
 
 
 logging.basicConfig(
@@ -74,11 +76,13 @@ def main() -> None:
                 continue
 
             for vehicle in vehicles_by_assignment.values():
-                message = vehicle.step(interval)
-                topic = f"veylix/v1/vehicles/{vehicle.vehicle_id}/telemetry"
+                message_data = vehicle.step(interval)
+                message = TelemetryMessage.model_validate_json(json.dumps(message_data))
+                message.validate_timestamp()
+                topic = telemetry_topic(message.vehicle_id)
                 result = client.publish(
                     topic,
-                    json.dumps(message),
+                    message.model_dump_json(),
                     qos=1,
                 )
                 if result.rc != mqtt.MQTT_ERR_SUCCESS:

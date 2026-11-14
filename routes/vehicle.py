@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from db import get_db
 from models import DeviceAssignment, Fleet, TelemetryReading, Vehicle
 from schemas.common import PaginationMeta, build_pagination_meta
+from schemas.health import VehicleHealthResponse
 from schemas.telemetry import TelemetryReadingListResponse
 from schemas.vehicle import (
     VehicleCreate,
@@ -19,6 +20,8 @@ from schemas.vehicle import (
     VehicleStatus,
     VehicleUpdate,
 )
+from telemetry.constants import HEALTH_SIGNAL_NAMES
+from telemetry.health import build_vehicle_health
 
 
 router = APIRouter(prefix="/api/v1/vehicles", tags=["vehicles"])
@@ -189,6 +192,54 @@ def list_vehicle_telemetry(
         items=items,
         pagination=build_pagination_meta(total_items, page, page_size),
     )
+
+
+@router.get("/{vehicle_id}/health", response_model=VehicleHealthResponse)
+def get_vehicle_health(
+    vehicle_id: UUID,
+    db: Session = Depends(get_db),
+) -> VehicleHealthResponse:
+    if db.get(Vehicle, vehicle_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+
+    latest_readings = (
+        select(
+            TelemetryReading.signal_name.label("signal_name"),
+            TelemetryReading.value_numeric.label("value_numeric"),
+            TelemetryReading.value_text.label("value_text"),
+            TelemetryReading.unit.label("unit"),
+            TelemetryReading.observed_at.label("observed_at"),
+            func.row_number()
+            .over(
+                partition_by=TelemetryReading.signal_name,
+                order_by=(
+                    TelemetryReading.observed_at.desc(),
+                    TelemetryReading.id.desc(),
+                ),
+            )
+            .label("reading_rank"),
+        )
+        .where(
+            TelemetryReading.vehicle_id == vehicle_id,
+            TelemetryReading.signal_name.in_(HEALTH_SIGNAL_NAMES),
+        )
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            latest_readings.c.signal_name,
+            latest_readings.c.value_numeric,
+            latest_readings.c.value_text,
+            latest_readings.c.unit,
+            latest_readings.c.observed_at,
+        ).where(latest_readings.c.reading_rank == 1)
+    ).all()
+    latest_signals: dict[str, tuple[float | str, str, datetime]] = {}
+    for row in rows:
+        value = row.value_numeric if row.value_numeric is not None else row.value_text
+        if value is not None:
+            latest_signals[row.signal_name] = (value, row.unit, row.observed_at)
+    return build_vehicle_health(vehicle_id, latest_signals)
 
 
 @router.patch("/{vehicle_id}", response_model=VehicleRead)

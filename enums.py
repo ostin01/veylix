@@ -18,3 +18,8 @@ class DeviceConnectionStatus(str, Enum):
     UNKNOWN = "unknown"
     ONLINE = "online"
     OFFLINE = "offline"
+
+
+class AlertSeverity(str, Enum):
+    WARNING = "warning"
+    CRITICAL = "critical"

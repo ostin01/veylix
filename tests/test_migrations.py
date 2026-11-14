@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
 from enums import VehicleType
@@ -46,6 +46,10 @@ def test_assignment_migration_backfills_current_device_links(
         vehicle_id = vehicle.id
 
     command.upgrade(config, "head")
+
+    assert {"alerts", "telemetry_dead_letters"}.issubset(
+        set(inspect(engine).get_table_names())
+    )
 
     with Session(engine) as session:
         assignment = session.scalar(

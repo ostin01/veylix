@@ -7,7 +7,9 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    LargeBinary,
     String,
+    Text,
     Uuid,
     UniqueConstraint,
     func,
@@ -15,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-from enums import DeviceConnectionStatus, VehicleStatus, VehicleType
+from enums import AlertSeverity, DeviceConnectionStatus, VehicleStatus, VehicleType
 
 
 def utc_now() -> datetime:
@@ -171,3 +173,77 @@ class TelemetryReading(Base):
     )
     schema_version: Mapped[int] = mapped_column(nullable=False)
     message_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    vehicle_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("vehicles.id", ondelete="RESTRICT"), nullable=False
+    )
+    device_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("devices.id", ondelete="RESTRICT"), nullable=False
+    )
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    severity: Mapped[AlertSeverity] = mapped_column(
+        Enum(
+            AlertSeverity,
+            name="alert_severity",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+    )
+    message: Mapped[str] = mapped_column(String(255), nullable=False)
+    value_numeric: Mapped[float | None] = mapped_column(nullable=True)
+    value_text: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    threshold: Mapped[str] = mapped_column(String(100), nullable=False)
+    first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index(
+    "uq_alerts_active_vehicle_code",
+    Alert.vehicle_id,
+    Alert.code,
+    unique=True,
+    postgresql_where=Alert.resolved_at.is_(None),
+    sqlite_where=Alert.resolved_at.is_(None),
+)
+Index("ix_alerts_vehicle_created_at", Alert.vehicle_id, Alert.created_at)
+Index("ix_alerts_resolved_at", Alert.resolved_at)
+
+
+class TelemetryDeadLetter(Base):
+    __tablename__ = "telemetry_dead_letters"
+    __table_args__ = (
+        UniqueConstraint("message_hash", name="uq_telemetry_dead_letters_message_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    message_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    topic: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    error_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
+Index("ix_telemetry_dead_letters_last_seen_at", TelemetryDeadLetter.last_seen_at)

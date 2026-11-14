@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from routes import health
 from routes import fleet
 from routes import device
+from routes import alerts
+from routes import telemetry
 from routes import vehicle
 
 
@@ -20,3 +22,5 @@ app.include_router(health.router)
 app.include_router(fleet.router)
 app.include_router(vehicle.router)
 app.include_router(device.router)
+app.include_router(telemetry.router)
+app.include_router(alerts.router)

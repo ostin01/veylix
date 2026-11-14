@@ -23,6 +23,12 @@ registered vehicle/device and active assignment, then stores one row per
 signal in PostgreSQL. Accepted telemetry updates the device connection status
 to `online` and its `last_seen_at` timestamp.
 
+The MQTT topic is `veylix/v1/vehicles/{vehicle_id}/telemetry`. Its version-1
+JSON envelope contains `schema_version`, `message_id`, `vehicle_id`,
+`device_id`, timezone-aware `observed_at`, and a `signals` object. The signal
+catalogue is defined in `telemetry/schemas.py` and is shared by the simulator
+and consumer.
+
 The local MQTT broker listens on `localhost:1883`. Inspect a message with:
 
 ```bash
@@ -37,11 +43,38 @@ make down-all
 ```
 
 Only registered and assigned devices publish; no demo database records are
-created automatically. Invalid or unassigned messages are rejected and logged.
-The consumer acknowledges MQTT messages only after they are stored (or
-rejected as invalid). Database failures are retried with exponential backoff;
-the broker and consumer use persistent MQTT sessions so unacknowledged QoS 1
-messages can be redelivered after a restart.
+created automatically. Invalid or unassigned messages are quarantined in
+`telemetry_dead_letters` and are available from
+`GET /api/v1/telemetry/dead-letters`. Messages are acknowledged only after
+successful storage or quarantine. Processing failures are retried up to
+`TELEMETRY_MAX_ATTEMPTS` times (default 5) with exponential backoff; if
+quarantine storage also fails, the message remains unacknowledged for broker
+redelivery. Dead-letter payloads are returned as Base64. A full
+consumer queue triggers a non-blocking disconnect, so unacknowledged QoS 1
+messages can be redelivered after the consumer restarts.
+
+The consumer checks device freshness every
+`DEVICE_OFFLINE_CHECK_INTERVAL_SECONDS` (default 10) and marks online devices
+offline after `DEVICE_OFFLINE_AFTER_SECONDS` (default 60) without accepted
+telemetry. New devices remain `unknown` until first telemetry is received.
+
+`GET /api/v1/vehicles/{vehicle_id}/health` reports a derived health score and
+per-signal indicators. Diagnostic alerts are created when readings cross
+thresholds and automatically resolved on a later normal reading. Defaults are
+in `telemetry/health.py`: low battery state of charge, motor temperature,
+battery voltage, tire pressure, speed, RPM, and a vehicle-reported offline
+state. View alert history with `GET /api/v1/alerts?vehicle_id={vehicle_id}`;
+use `active=true` for unresolved alerts and acknowledge one with
+`POST /api/v1/alerts/{alert_id}/acknowledge`.
+
+The initial diagnostic thresholds are code-defined defaults: state of charge
+below 20% (critical below 10%); motor temperature above 100 degC (critical
+above 125); tire pressure below 28 or above 42 psi (critical below 25 or above
+48); speed above 160 km/h (critical above 200); and RPM above 8,000 (critical
+above 12,000). Battery-voltage thresholds assume the simulator's high-voltage
+pack (warning outside 300-450 V, critical outside 280-500 V); tune them for
+real vehicles before using this rule with other battery types. Runtime
+connectivity and retry settings can be overridden in `.env`.
 
 Retrieve a vehicle's telemetry with
 `GET /api/v1/vehicles/{vehicle_id}/telemetry`. Results are paginated and can
@@ -51,6 +84,11 @@ Time filters must include a timezone. For example:
 ```text
 GET /api/v1/vehicles/{vehicle_id}/telemetry?signal_name=speed_kmh&page=1&page_size=20
 ```
+
+For a fleet-wide dashboard snapshot, `GET /api/v1/telemetry/latest` returns one
+entry for every vehicle, with the latest known latitude, longitude, speed, and
+battery state of charge. Each signal includes its value, unit, and observation
+time; signals without a reading are `null`.
 
 `make down-all` preserves the PostgreSQL and MQTT data volumes. To remove the
 database, broker persistence, and all their data, run
@@ -84,6 +122,8 @@ To run the database integration tests:
 uv run pytest
 ```
 
+GitHub Actions runs the same test suite on pushes and pull requests.
+
 Open `http://127.0.0.1:8000/docs` to try the endpoints interactively.
 
 The database schema is managed by Alembic migrations; do not use
@@ -104,6 +144,11 @@ All management endpoints use the `/api/v1` prefix.
 | `GET` | `/api/v1/vehicles` | List vehicles (`page`, `page_size`, `fleet_id`, `status`, `search`, `sort_by`, `sort_order`) |
 | `GET` | `/api/v1/vehicles/{vehicle_id}` | Get a vehicle |
 | `GET` | `/api/v1/vehicles/{vehicle_id}/telemetry` | List vehicle telemetry (filters and pagination) |
+| `GET` | `/api/v1/vehicles/{vehicle_id}/health` | Get derived vehicle health indicators |
+| `GET` | `/api/v1/telemetry/latest` | Get each vehicle's latest position, speed, and battery reading |
+| `GET` | `/api/v1/telemetry/dead-letters` | List quarantined telemetry messages |
+| `GET` | `/api/v1/alerts` | List alerts (`vehicle_id`, `active`, pagination) |
+| `POST` | `/api/v1/alerts/{alert_id}/acknowledge` | Acknowledge an active alert |
 | `PATCH` | `/api/v1/vehicles/{vehicle_id}` | Partially update vehicle details or status |
 | `DELETE` | `/api/v1/vehicles/{vehicle_id}` | Delete a vehicle |
 | `POST` | `/api/v1/devices` | Register a device |

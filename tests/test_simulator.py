@@ -1,8 +1,11 @@
+import json
 from uuid import UUID
 
 import pytest
 
 from simulator.vehicle import SimulatedVehicle, create_simulated_vehicles
+from telemetry.protocol import parse_telemetry_topic, telemetry_topic
+from telemetry.schemas import TelemetryMessage
 
 
 def test_simulated_vehicle_emits_valid_correlated_signals() -> None:
@@ -18,6 +21,10 @@ def test_simulated_vehicle_emits_valid_correlated_signals() -> None:
     initial_odometer = first["signals"]["odometer_km"]
     second = vehicle.step(5)
 
+    message = TelemetryMessage.model_validate_json(json.dumps(second))
+    message.validate_timestamp()
+    topic = telemetry_topic(message.vehicle_id)
+    assert parse_telemetry_topic(topic) == message.vehicle_id
     assert second["schema_version"] == 1
     assert UUID(second["message_id"])
     assert second["vehicle_id"] == str(vehicle.vehicle_id)
@@ -73,3 +80,11 @@ def test_simulator_rejects_nonpositive_elapsed_time() -> None:
     )[0]
     with pytest.raises(ValueError):
         vehicle.step(0)
+
+
+def test_telemetry_topic_parser_rejects_topics_outside_the_contract() -> None:
+    with pytest.raises(ValueError, match="unexpected telemetry topic"):
+        parse_telemetry_topic("veylix/v1/devices/device-id/telemetry")
+
+    with pytest.raises(ValueError, match="invalid vehicle ID"):
+        parse_telemetry_topic("veylix/v1/vehicles/not-a-uuid/telemetry")

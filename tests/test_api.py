@@ -37,13 +37,18 @@ def create_fleet(client: TestClient) -> str:
     return response.json()["id"]
 
 
-def create_vehicle(client: TestClient, fleet_id: str) -> dict:
+def create_vehicle(
+    client: TestClient,
+    fleet_id: str,
+    vin: str = "1HGCM82633A123456",
+    registration_number: str = "ABC-123-XY",
+) -> dict:
     response = client.post(
         "/api/v1/vehicles",
         json={
             "fleet_id": fleet_id,
-            "vin": "1HGCM82633A123456",
-            "registration_number": "ABC-123-XY",
+            "vin": vin,
+            "registration_number": registration_number,
             "make": "Honda",
             "model": "Accord",
             "year": 2025,
@@ -139,6 +144,16 @@ def test_device_registration_assignment_filtering_and_update(client: TestClient)
             "serial_number": "TEL-001",
             "device_type": "telematics",
             "firmware_version": "1.2.0",
+            "connection_status": "online",
+        },
+    )
+    assert created.status_code == 422
+    created = client.post(
+        "/api/v1/devices",
+        json={
+            "serial_number": "TEL-001",
+            "device_type": "telematics",
+            "firmware_version": "1.2.0",
         },
     )
     assert created.status_code == 201
@@ -158,24 +173,86 @@ def test_device_registration_assignment_filtering_and_update(client: TestClient)
     updated = client.patch(
         f"/api/v1/devices/{device_id}",
         json={
-            "connection_status": "online",
             "firmware_version": "1.3.0",
-            "last_seen_at": "2026-11-09T12:00:00Z",
         },
     )
     assert updated.status_code == 200
-    assert updated.json()["connection_status"] == "online"
+    assert updated.json()["connection_status"] == "unknown"
     assert updated.json()["firmware_version"] == "1.3.0"
-    assert updated.json()["last_seen_at"].startswith("2026-11-09T12:00:00")
+    assert updated.json()["last_seen_at"] is None
+    rejected_status_update = client.patch(
+        f"/api/v1/devices/{device_id}",
+        json={"connection_status": "online"},
+    )
+    assert rejected_status_update.status_code == 422
+    rejected_last_seen_update = client.patch(
+        f"/api/v1/devices/{device_id}",
+        json={"last_seen_at": "2026-11-09T12:00:00Z"},
+    )
+    assert rejected_last_seen_update.status_code == 422
 
     listing = client.get(
         "/api/v1/devices",
-        params={"vehicle_id": vehicle_id, "connection_status": "online", "search": "TEL"},
+        params={"vehicle_id": vehicle_id, "connection_status": "unknown", "search": "TEL"},
     )
     assert listing.status_code == 200
     assert listing.json()["pagination"]["total_items"] == 1
     assert listing.json()["items"][0]["id"] == device_id
     assert client.get(f"/api/v1/devices/{device_id}").status_code == 200
+    history = client.get(f"/api/v1/devices/{device_id}/assignments")
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    assert history.json()[0]["vehicle_id"] == vehicle_id
+    assert history.json()[0]["unassigned_at"] is None
+
+
+def test_device_reassignment_preserves_history_and_protects_vehicle(client: TestClient) -> None:
+    first_fleet_id = create_fleet(client)
+    second_fleet = client.post("/api/v1/fleets", json={"name": "South Depot"})
+    assert second_fleet.status_code == 201
+    first_vehicle_id = create_vehicle(client, first_fleet_id)["id"]
+    second_vehicle_id = create_vehicle(
+        client,
+        second_fleet.json()["id"],
+        vin="2HGCM82633A123456",
+        registration_number="XYZ-456-AB",
+    )["id"]
+    created = client.post(
+        "/api/v1/devices",
+        json={
+            "serial_number": "TEL-HISTORY",
+            "device_type": "telematics",
+            "vehicle_id": first_vehicle_id,
+        },
+    )
+    assert created.status_code == 201
+    device_id = created.json()["id"]
+
+    history_before = client.get(f"/api/v1/devices/{device_id}/assignments").json()
+    assert len(history_before) == 1
+    assert history_before[0]["vehicle_id"] == first_vehicle_id
+    assert client.delete(f"/api/v1/vehicles/{first_vehicle_id}").status_code == 409
+
+    reassigned = client.post(
+        f"/api/v1/devices/{device_id}/assign",
+        json={"vehicle_id": second_vehicle_id},
+    )
+    assert reassigned.status_code == 200
+    assert reassigned.json()["vehicle_id"] == second_vehicle_id
+    history = client.get(f"/api/v1/devices/{device_id}/assignments").json()
+    assert len(history) == 2
+    assert history[0]["vehicle_id"] == first_vehicle_id
+    assert history[0]["unassigned_at"] is not None
+    assert history[1]["vehicle_id"] == second_vehicle_id
+    assert history[1]["unassigned_at"] is None
+
+    unassigned = client.delete(f"/api/v1/devices/{device_id}/assignment")
+    assert unassigned.status_code == 200
+    assert unassigned.json()["vehicle_id"] is None
+    final_history = client.get(f"/api/v1/devices/{device_id}/assignments").json()
+    assert len(final_history) == 2
+    assert final_history[1]["unassigned_at"] is not None
+    assert client.delete(f"/api/v1/vehicles/{first_vehicle_id}").status_code == 409
 
 
 def test_device_duplicate_serial_and_invalid_assignments(client: TestClient) -> None:
@@ -198,3 +275,4 @@ def test_device_duplicate_serial_and_invalid_assignments(client: TestClient) -> 
     )
     assert invalid_assignment.status_code == 404
     assert client.get(f"/api/v1/devices/{device_id}").json()["vehicle_id"] is None
+    assert client.get(f"/api/v1/devices/{device_id}/assignments").json() == []

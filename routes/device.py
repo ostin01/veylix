@@ -1,6 +1,6 @@
 from math import ceil
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
@@ -9,9 +9,16 @@ from sqlalchemy.orm import Session
 
 from db import get_db
 from enums import DeviceConnectionStatus
-from models import Device, Vehicle
+from models import Device, DeviceAssignment, Vehicle, utc_now
 from schemas.common import PaginationMeta
-from schemas.device import DeviceAssign, DeviceCreate, DeviceListResponse, DeviceRead, DeviceUpdate
+from schemas.device import (
+    DeviceAssign,
+    DeviceAssignmentRead,
+    DeviceCreate,
+    DeviceListResponse,
+    DeviceRead,
+    DeviceUpdate,
+)
 
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
@@ -42,8 +49,15 @@ def create_device(payload: DeviceCreate, db: Session = Depends(get_db)) -> Devic
             detail="A device with this serial number already exists",
         )
 
-    device = Device(**payload.model_dump())
+    device = Device(id=uuid4(), **payload.model_dump())
     db.add(device)
+    if device.vehicle_id is not None:
+        db.add(
+            DeviceAssignment(
+                device_id=device.id,
+                vehicle_id=device.vehicle_id,
+            )
+        )
     _commit_device(db)
     db.refresh(device)
     return device
@@ -106,6 +120,20 @@ def get_device(device_id: UUID, db: Session = Depends(get_db)) -> Device:
     return device
 
 
+@router.get("/{device_id}/assignments", response_model=list[DeviceAssignmentRead])
+def list_device_assignments(
+    device_id: UUID,
+    db: Session = Depends(get_db),
+) -> list[DeviceAssignment]:
+    if db.get(Device, device_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    return db.scalars(
+        select(DeviceAssignment)
+        .where(DeviceAssignment.device_id == device_id)
+        .order_by(DeviceAssignment.assigned_at.asc(), DeviceAssignment.id.asc())
+    ).all()
+
+
 @router.patch("/{device_id}", response_model=DeviceRead)
 def update_device(
     device_id: UUID,
@@ -135,7 +163,49 @@ def assign_device(
     if db.get(Vehicle, payload.vehicle_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
 
+    if device.vehicle_id == payload.vehicle_id:
+        return device
+
+    assigned_at = utc_now()
+    current_assignment = db.scalar(
+        select(DeviceAssignment).where(
+            DeviceAssignment.device_id == device_id,
+            DeviceAssignment.unassigned_at.is_(None),
+        )
+    )
+    if current_assignment is not None:
+        current_assignment.unassigned_at = assigned_at
     device.vehicle_id = payload.vehicle_id
+    db.add(
+        DeviceAssignment(
+            device_id=device.id,
+            vehicle_id=payload.vehicle_id,
+            assigned_at=assigned_at,
+        )
+    )
+    _commit_device(db)
+    db.refresh(device)
+    return device
+
+
+@router.delete("/{device_id}/assignment", response_model=DeviceRead)
+def unassign_device(device_id: UUID, db: Session = Depends(get_db)) -> Device:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    if device.vehicle_id is None:
+        return device
+
+    assigned_at = utc_now()
+    current_assignment = db.scalar(
+        select(DeviceAssignment).where(
+            DeviceAssignment.device_id == device_id,
+            DeviceAssignment.unassigned_at.is_(None),
+        )
+    )
+    if current_assignment is not None:
+        current_assignment.unassigned_at = assigned_at
+    device.vehicle_id = None
     _commit_device(db)
     db.refresh(device)
     return device

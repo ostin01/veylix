@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import Fleet, Vehicle
+from models import DeviceAssignment, Fleet, Vehicle
 from schemas.common import PaginationMeta
 from schemas.vehicle import (
     VehicleCreate,
@@ -160,6 +160,15 @@ def delete_vehicle(vehicle_id: UUID, db: Session = Depends(get_db)) -> Response:
     vehicle = db.get(Vehicle, vehicle_id)
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    if db.scalar(
+        select(DeviceAssignment.id)
+        .where(DeviceAssignment.vehicle_id == vehicle_id)
+        .limit(1)
+    ) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vehicle cannot be deleted because it has device assignment history",
+        )
     db.delete(vehicle)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

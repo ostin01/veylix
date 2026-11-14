@@ -111,6 +111,22 @@ class Device(Base):
     )
 
 
+class DeviceAssignment(Base):
+    __tablename__ = "device_assignments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    device_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
+    )
+    vehicle_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("vehicles.id", ondelete="RESTRICT"), nullable=False
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    unassigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 Index(
     "uq_vehicles_registration_number_lower",
     func.lower(Vehicle.registration_number),
@@ -119,3 +135,11 @@ Index(
 Index("ix_devices_vehicle_id", Device.vehicle_id)
 Index("ix_devices_connection_status", Device.connection_status)
 Index("uq_devices_serial_number_lower", func.lower(Device.serial_number), unique=True)
+Index("ix_device_assignments_vehicle_id", DeviceAssignment.vehicle_id)
+Index(
+    "uq_device_assignments_active_device",
+    DeviceAssignment.device_id,
+    unique=True,
+    postgresql_where=DeviceAssignment.unassigned_at.is_(None),
+    sqlite_where=DeviceAssignment.unassigned_at.is_(None),
+)

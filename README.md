@@ -6,19 +6,36 @@ are not included yet.
 
 ## Run with Docker Compose
 
-Docker Compose builds the API image, starts PostgreSQL, applies migrations, and
-then starts the API:
+Docker Compose builds the API and simulator, starts PostgreSQL and the local
+MQTT broker, applies migrations, then starts the API and three simulated
+vehicles:
 
 ```bash
 make dev-all
 ```
 
-Open `http://127.0.0.1:8000/docs` to try the endpoints. Useful commands:
+Open `http://127.0.0.1:8000/docs` to try the API. The simulator publishes
+synthetic telemetry every five seconds to topics such as
+`veylix/v1/vehicles/{vehicle_id}/telemetry`. The local MQTT broker listens on
+`localhost:1883`. Each JSON message includes generated vehicle/device IDs,
+`observed_at`, and signals for GPS position, speed, odometer, battery charge
+and voltage, motor temperature, RPM, tire pressure, and parked/driving state.
+Inspect one message with:
 
 ```bash
-make docker-logs
+docker compose exec mqtt mosquitto_sub -h localhost -t "veylix/v1/vehicles/+/telemetry" -v -C 1
+```
+
+Follow simulator logs or stop services with:
+
+```bash
+docker compose logs -f simulator
 make down-all
 ```
+
+The simulator currently generates demo vehicle/device IDs; it does not create
+database records or feed telemetry into the API yet. MQTT ingestion and linking
+simulated IDs to registered vehicles/devices are a future step.
 
 `make down-all` preserves the PostgreSQL data volume. To remove the database
 and all its data, run `docker compose down --volumes`.
@@ -75,12 +92,18 @@ All management endpoints use the `/api/v1` prefix.
 | `POST` | `/api/v1/devices` | Register a device |
 | `GET` | `/api/v1/devices` | List devices (`page`, `page_size`, `vehicle_id`, `connection_status`, `search`, `sort_by`, `sort_order`) |
 | `GET` | `/api/v1/devices/{device_id}` | Get a device |
-| `PATCH` | `/api/v1/devices/{device_id}` | Update device metadata or connection state |
+| `PATCH` | `/api/v1/devices/{device_id}` | Update device metadata |
 | `POST` | `/api/v1/devices/{device_id}/assign` | Assign or reassign a device to a vehicle |
+| `DELETE` | `/api/v1/devices/{device_id}/assignment` | Unassign a device and close its active assignment |
+| `GET` | `/api/v1/devices/{device_id}/assignments` | View assignment history |
 
 Create operations return `201`; deletes return `204`. Missing resources return
 `404`, duplicate vehicle VINs or registration numbers return `409`, and a fleet
-with vehicles cannot be deleted. Vehicle status values are `active`, `inactive`,
-and `maintenance`. Device connection status values are `unknown`, `online`, and
-`offline`. Newly registered devices are unassigned and have no `last_seen_at`
-value until supplied through the API or updated by a future telemetry heartbeat.
+with vehicles cannot be deleted. Vehicles with device assignment history cannot
+be deleted, preserving audit references. Vehicle status values are `active`,
+`inactive`, and `maintenance`. Device connection status values are `unknown`,
+`online`, and `offline`. Device registration can optionally include a
+`vehicle_id`; assigning or reassigning through the API records timestamped
+history. The `connection_status` and `last_seen_at` fields are read-only in
+public device requests and will be updated by the future telemetry/heartbeat
+pipeline.

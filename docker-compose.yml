@@ -45,5 +45,34 @@ services:
       retries: 5
       start_period: 5s
 
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "mosquitto_pub -h 127.0.0.1 -t healthcheck -m ok"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  simulator:
+    build:
+      context: .
+      dockerfile: vehicle-simulator/Dockerfile
+    environment:
+      MQTT_HOST: mqtt
+      MQTT_PORT: 1883
+      SIMULATOR_VEHICLE_COUNT: 3
+      SIMULATOR_PUBLISH_INTERVAL_SECONDS: 5
+      SIMULATOR_RANDOM_SEED: 42
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:

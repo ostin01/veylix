@@ -10,27 +10,26 @@ from schemas.common import PaginationMeta
 class DeviceCreate(BaseModel):
     """What the client sends to register a device."""
 
+    model_config = ConfigDict(extra="forbid")
+
     serial_number: str = Field(min_length=1, max_length=100)
     device_type: str = Field(min_length=1, max_length=50)
     firmware_version: str | None = Field(default=None, max_length=50)
     vehicle_id: UUID | None = None
-    connection_status: DeviceConnectionStatus = DeviceConnectionStatus.UNKNOWN
-    last_seen_at: datetime | None = None
 
 
 class DeviceUpdate(BaseModel):
-    """What the client sends to PATCH device metadata and connection state."""
+    """What the client sends to PATCH device metadata."""
+
+    model_config = ConfigDict(extra="forbid")
 
     device_type: str | None = Field(default=None, min_length=1, max_length=50)
     firmware_version: str | None = Field(default=None, max_length=50)
-    connection_status: DeviceConnectionStatus | None = None
-    last_seen_at: datetime | None = None
 
     @model_validator(mode="after")
-    def required_fields_cannot_be_null(self):
-        for field in ("device_type", "connection_status"):
-            if field in self.model_fields_set and getattr(self, field) is None:
-                raise ValueError(f"{field} cannot be null")
+    def device_type_cannot_be_null(self):
+        if "device_type" in self.model_fields_set and self.device_type is None:
+            raise ValueError("device_type cannot be null")
         return self
 
 
@@ -52,6 +51,16 @@ class DeviceRead(BaseModel):
     last_seen_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class DeviceAssignmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    device_id: UUID
+    vehicle_id: UUID
+    assigned_at: datetime
+    unassigned_at: datetime | None
 
 
 class DeviceListResponse(BaseModel):

@@ -1,3 +1,4 @@
+from datetime import datetime
 from math import ceil
 from typing import Literal
 from uuid import UUID
@@ -9,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from db import get_db
 from models import DeviceAssignment, Fleet, TelemetryReading, Vehicle
-from schemas.common import PaginationMeta
+from schemas.common import PaginationMeta, build_pagination_meta
+from schemas.telemetry import TelemetryReadingListResponse
 from schemas.vehicle import (
     VehicleCreate,
     VehicleListResponse,
@@ -130,6 +132,63 @@ def get_vehicle(vehicle_id: UUID, db: Session = Depends(get_db)) -> Vehicle:
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
     return vehicle
+
+
+@router.get("/{vehicle_id}/telemetry", response_model=TelemetryReadingListResponse)
+def list_vehicle_telemetry(
+    vehicle_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    device_id: UUID | None = None,
+    signal_name: str | None = Query(default=None, min_length=1, max_length=50),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    db: Session = Depends(get_db),
+) -> TelemetryReadingListResponse:
+    if db.get(Vehicle, vehicle_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    if start_time is not None and (
+        start_time.tzinfo is None or start_time.utcoffset() is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="start_time must include a timezone",
+        )
+    if end_time is not None and (end_time.tzinfo is None or end_time.utcoffset() is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="end_time must include a timezone",
+        )
+    if start_time is not None and end_time is not None and start_time > end_time:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="start_time must be earlier than or equal to end_time",
+        )
+
+    filters = [TelemetryReading.vehicle_id == vehicle_id]
+    if device_id is not None:
+        filters.append(TelemetryReading.device_id == device_id)
+    if signal_name is not None:
+        filters.append(TelemetryReading.signal_name == signal_name)
+    if start_time is not None:
+        filters.append(TelemetryReading.observed_at >= start_time)
+    if end_time is not None:
+        filters.append(TelemetryReading.observed_at <= end_time)
+
+    query = select(TelemetryReading).where(*filters)
+    total_items = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    items = db.scalars(
+        query.order_by(
+            TelemetryReading.observed_at.desc(),
+            TelemetryReading.id.desc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return TelemetryReadingListResponse(
+        items=items,
+        pagination=build_pagination_meta(total_items, page, page_size),
+    )
 
 
 @router.patch("/{vehicle_id}", response_model=VehicleRead)

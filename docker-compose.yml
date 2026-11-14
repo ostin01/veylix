@@ -65,6 +65,7 @@ services:
       - "127.0.0.1:1883:1883"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
     healthcheck:
       test:
         - CMD-SHELL
@@ -94,3 +95,4 @@ services:
 
 volumes:
   postgres_data:
+  mqtt_data:

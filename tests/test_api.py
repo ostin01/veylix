@@ -340,6 +340,31 @@ def test_telemetry_is_validated_stored_idempotently_and_updates_device_status(
     finally:
         db_generator.close()
     assert client.delete(f"/api/v1/vehicles/{vehicle_id}").status_code == 409
+    telemetry = client.get(
+        f"/api/v1/vehicles/{vehicle_id}/telemetry",
+        params={"signal_name": "speed_kmh", "page_size": 1},
+    )
+    assert telemetry.status_code == 200
+    assert telemetry.json()["pagination"]["total_items"] == 1
+    assert telemetry.json()["items"][0]["signal_name"] == "speed_kmh"
+    assert telemetry.json()["items"][0]["value_numeric"] == 42.5
+    assert telemetry.json()["items"][0]["value_text"] is None
+
+    all_telemetry = client.get(
+        f"/api/v1/vehicles/{vehicle_id}/telemetry",
+        params={"page": 2, "page_size": 3},
+    )
+    assert all_telemetry.status_code == 200
+    assert all_telemetry.json()["pagination"]["total_items"] == 10
+    assert len(all_telemetry.json()["items"]) == 3
+    assert all_telemetry.json()["pagination"]["total_pages"] == 4
+    assert client.get(
+        f"/api/v1/vehicles/{vehicle_id}/telemetry",
+        params={"start_time": "2026-11-15T00:00:00Z", "end_time": "2026-11-14T00:00:00Z"},
+    ).status_code == 422
+    assert client.get(
+        "/api/v1/vehicles/00000000-0000-0000-0000-000000000001/telemetry"
+    ).status_code == 404
 
 
 def test_telemetry_rejects_unregistered_or_mismatched_sender(client: TestClient) -> None:

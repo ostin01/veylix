@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import signal
 import threading
 
@@ -16,6 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 stop_event = threading.Event()
+message_queue: queue.Queue[mqtt.MQTTMessage] = queue.Queue(maxsize=100)
 
 
 def on_connect(
@@ -40,20 +42,52 @@ def on_message(
     userdata: object,
     message: mqtt.MQTTMessage,
 ) -> None:
-    try:
-        with SessionLocal() as db:
-            inserted = ingest_telemetry(db, message.topic, message.payload)
-    except TelemetryRejected as error:
-        logger.warning("Rejected telemetry from %s: %s", message.topic, error)
-        return
-    except SQLAlchemyError:
-        logger.exception("Database failure while processing telemetry from %s", message.topic)
+    message_queue.put(message)
+
+
+def process_message(client: mqtt.Client, message: mqtt.MQTTMessage) -> None:
+    retry_delay = 1
+    while not stop_event.is_set():
+        try:
+            with SessionLocal() as db:
+                inserted = ingest_telemetry(db, message.topic, message.payload)
+        except TelemetryRejected as error:
+            logger.warning("Rejected telemetry from %s: %s", message.topic, error)
+            break
+        except SQLAlchemyError:
+            logger.exception(
+                "Database failure while processing telemetry from %s; retrying in %ds",
+                message.topic,
+                retry_delay,
+            )
+            stop_event.wait(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+            continue
+
+        if inserted:
+            logger.info("Stored %d telemetry signals from %s", inserted, message.topic)
+        else:
+            logger.debug("Ignored duplicate telemetry message from %s", message.topic)
+        break
+    else:
         return
 
-    if inserted:
-        logger.info("Stored %d telemetry signals from %s", inserted, message.topic)
-    else:
-        logger.debug("Ignored duplicate telemetry message from %s", message.topic)
+    if not stop_event.is_set() and message.qos > 0:
+        result = client.ack(message.mid, message.qos)
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            logger.error("Failed to acknowledge telemetry message %d", message.mid)
+
+
+def process_messages(client: mqtt.Client) -> None:
+    while not stop_event.is_set():
+        try:
+            message = message_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+        try:
+            process_message(client, message)
+        finally:
+            message_queue.task_done()
 
 
 def stop_consumer(signum: int, frame: object) -> None:
@@ -67,10 +101,15 @@ def main() -> None:
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         client_id="veylix-telemetry-consumer",
+        clean_session=False,
+        manual_ack=True,
     )
     client.on_connect = on_connect
     client.on_message = on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(host, port, keepalive=30)
+    worker = threading.Thread(target=process_messages, args=(client,), daemon=True)
+    worker.start()
     client.loop_start()
     signal.signal(signal.SIGINT, stop_consumer)
     signal.signal(signal.SIGTERM, stop_consumer)
@@ -80,6 +119,7 @@ def main() -> None:
     finally:
         client.disconnect()
         client.loop_stop()
+        worker.join(timeout=5)
 
 
 if __name__ == "__main__":

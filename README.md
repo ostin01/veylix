@@ -38,11 +38,23 @@ make down-all
 
 Only registered and assigned devices publish; no demo database records are
 created automatically. Invalid or unassigned messages are rejected and logged.
-Telemetry readings are persisted, but a telemetry retrieval endpoint is not
-implemented yet.
+The consumer acknowledges MQTT messages only after they are stored (or
+rejected as invalid). Database failures are retried with exponential backoff;
+the broker and consumer use persistent MQTT sessions so unacknowledged QoS 1
+messages can be redelivered after a restart.
 
-`make down-all` preserves the PostgreSQL data volume. To remove the database
-and all its data, run `docker compose down --volumes`.
+Retrieve a vehicle's telemetry with
+`GET /api/v1/vehicles/{vehicle_id}/telemetry`. Results are paginated and can
+be filtered with `device_id`, `signal_name`, `start_time`, and `end_time`.
+Time filters must include a timezone. For example:
+
+```text
+GET /api/v1/vehicles/{vehicle_id}/telemetry?signal_name=speed_kmh&page=1&page_size=20
+```
+
+`make down-all` preserves the PostgreSQL and MQTT data volumes. To remove the
+database, broker persistence, and all their data, run
+`docker compose down --volumes`.
 
 ## Run the API directly
 
@@ -91,6 +103,7 @@ All management endpoints use the `/api/v1` prefix.
 | `POST` | `/api/v1/vehicles` | Register a vehicle in a fleet |
 | `GET` | `/api/v1/vehicles` | List vehicles (`page`, `page_size`, `fleet_id`, `status`, `search`, `sort_by`, `sort_order`) |
 | `GET` | `/api/v1/vehicles/{vehicle_id}` | Get a vehicle |
+| `GET` | `/api/v1/vehicles/{vehicle_id}/telemetry` | List vehicle telemetry (filters and pagination) |
 | `PATCH` | `/api/v1/vehicles/{vehicle_id}` | Partially update vehicle details or status |
 | `DELETE` | `/api/v1/vehicles/{vehicle_id}` | Delete a vehicle |
 | `POST` | `/api/v1/devices` | Register a device |
@@ -104,10 +117,10 @@ All management endpoints use the `/api/v1` prefix.
 Create operations return `201`; deletes return `204`. Missing resources return
 `404`, duplicate vehicle VINs or registration numbers return `409`, and a fleet
 with vehicles cannot be deleted. Vehicles with device assignment history cannot
-be deleted, preserving audit references. Vehicle status values are `active`,
-`inactive`, and `maintenance`. Device connection status values are `unknown`,
-`online`, and `offline`. Device registration can optionally include a
-`vehicle_id`; assigning or reassigning through the API records timestamped
-history. The `connection_status` and `last_seen_at` fields are read-only in
-public device requests and will be updated by the future telemetry/heartbeat
-pipeline.
+be deleted, preserving audit references; vehicles with telemetry history are
+also protected. Vehicle status values are `active`, `inactive`, and
+`maintenance`. Device connection status values are `unknown`, `online`, and
+`offline`. Device registration can optionally include a `vehicle_id`;
+assigning or reassigning through the API records timestamped history. The
+`connection_status` and `last_seen_at` fields are read-only in public device
+requests and are updated when telemetry is accepted.

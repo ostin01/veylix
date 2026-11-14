@@ -16,7 +16,15 @@ set_env_if_blank() {
     fi
 }
 
-set_env_if_blank JWT_SECRET_KEY "$(openssl rand -hex 32)"
+set_env_if_blank POSTGRES_DB veylix
+set_env_if_blank POSTGRES_USER veylix
+set_env_if_blank POSTGRES_PASSWORD veylix
+postgres_db=$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)
+postgres_user=$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)
+postgres_password=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
+set_env_if_blank DATABASE_URL "postgresql+psycopg://${postgres_user}:${postgres_password}@localhost:5432/${postgres_db}"
+set_env_if_blank DATABASE_URL_DOCKER "postgresql+psycopg://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
+set_env_if_blank JWT_SECRET_KEY_FILE ./secrets/jwt_secret_key
 set_env_if_blank BOOTSTRAP_ADMIN_USERNAME admin
 set_env_if_blank BOOTSTRAP_ADMIN_PASSWORD "$(openssl rand -hex 24)"
 set_env_if_blank MQTT_CA_CERT_FILE ./secrets/mqtt/ca.crt
@@ -25,13 +33,16 @@ set_env_if_blank MQTT_SERVER_KEY_FILE ./secrets/mqtt/server.key
 set_env_if_blank MQTT_SIMULATOR_PASSWORD_FILE ./secrets/mqtt/simulator_password
 set_env_if_blank MQTT_CONSUMER_PASSWORD_FILE ./secrets/mqtt/consumer_password
 
+if [[ ! -s secrets/jwt_secret_key ]]; then
+    openssl rand -hex 32 > secrets/jwt_secret_key
+fi
 if [[ ! -s secrets/mqtt/simulator_password ]]; then
     openssl rand -hex 32 > secrets/mqtt/simulator_password
 fi
 if [[ ! -s secrets/mqtt/consumer_password ]]; then
     openssl rand -hex 32 > secrets/mqtt/consumer_password
 fi
-chmod 600 secrets/mqtt/simulator_password secrets/mqtt/consumer_password
+chmod 600 secrets/jwt_secret_key secrets/mqtt/simulator_password secrets/mqtt/consumer_password
 
 if [[ ! -s secrets/mqtt/ca.crt || ! -s secrets/mqtt/server.crt || ! -s secrets/mqtt/server.key ]]; then
     openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes \

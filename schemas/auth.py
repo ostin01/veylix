@@ -37,8 +37,23 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+    refresh_expires_in: int
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: SecretStr = Field(min_length=32, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: SecretStr = Field(min_length=1, max_length=128)
+    new_password: SecretStr = Field(min_length=12, max_length=128)
+
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool
 
 
 class UserCreate(BaseModel):

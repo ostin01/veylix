@@ -189,6 +189,198 @@ def test_authentication_and_role_permissions(client: TestClient) -> None:
     )
 
 
+def test_refresh_tokens_rotate_and_reuse_revokes_the_token_family(
+    client: TestClient,
+) -> None:
+    login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "test-admin",
+            "password": TEST_ADMIN_PASSWORD,
+        },
+    )
+    assert login.status_code == 200
+    initial_refresh = login.json()["refresh_token"]
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": initial_refresh},
+    )
+    assert refreshed.status_code == 200
+    rotated_refresh = refreshed.json()["refresh_token"]
+    assert rotated_refresh != initial_refresh
+
+    replay = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": initial_refresh},
+    )
+    assert replay.status_code == 401
+    assert (
+        client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": rotated_refresh},
+        ).status_code
+        == 401
+    )
+
+    logout_login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "test-admin",
+            "password": TEST_ADMIN_PASSWORD,
+        },
+    )
+    logout_refresh = logout_login.json()["refresh_token"]
+    assert (
+        client.post(
+            "/api/v1/auth/logout",
+            json={"refresh_token": logout_refresh},
+        ).status_code
+        == 204
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": logout_refresh},
+        ).status_code
+        == 401
+    )
+
+
+def test_password_change_invalidates_old_access_and_refresh_tokens(
+    client: TestClient,
+) -> None:
+    login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "test-admin",
+            "password": TEST_ADMIN_PASSWORD,
+        },
+    )
+    refresh_token = login.json()["refresh_token"]
+    new_password = "new-test-admin-password"
+
+    changed = client.post(
+        "/api/v1/auth/password",
+        json={
+            "current_password": TEST_ADMIN_PASSWORD,
+            "new_password": new_password,
+        },
+    )
+    assert changed.status_code == 204
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": refresh_token},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/token",
+            json={
+                "username": "test-admin",
+                "password": TEST_ADMIN_PASSWORD,
+            },
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/token",
+            json={"username": "test-admin", "password": new_password},
+        ).status_code
+        == 200
+    )
+
+
+def test_admin_can_deactivate_and_reactivate_users(client: TestClient) -> None:
+    admin = client.get("/api/v1/auth/me").json()
+    assert (
+        client.patch(
+            f"/api/v1/users/{admin['id']}/status",
+            json={"is_active": False},
+        ).status_code
+        == 409
+    )
+
+    created = client.post(
+        "/api/v1/users",
+        json={
+            "username": "deactivation-target",
+            "password": "a-strong-test-password",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
+    user_id = created.json()["id"]
+    login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "deactivation-target",
+            "password": "a-strong-test-password",
+        },
+    )
+    access_token = login.json()["access_token"]
+    refresh_token = login.json()["refresh_token"]
+
+    deactivated = client.patch(
+        f"/api/v1/users/{user_id}/status",
+        json={"is_active": False},
+    )
+    assert deactivated.status_code == 200
+    assert deactivated.json()["is_active"] is False
+    assert (
+        client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": refresh_token},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/token",
+            json={
+                "username": "deactivation-target",
+                "password": "a-strong-test-password",
+            },
+        ).status_code
+        == 401
+    )
+
+    reactivated = client.patch(
+        f"/api/v1/users/{user_id}/status",
+        json={"is_active": True},
+    )
+    assert reactivated.status_code == 200
+    assert reactivated.json()["is_active"] is True
+    assert (
+        client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/token",
+            json={
+                "username": "deactivation-target",
+                "password": "a-strong-test-password",
+            },
+        ).status_code
+        == 200
+    )
+
+
 def test_fleet_and_vehicle_crud_persist_between_requests(client: TestClient) -> None:
     fleet_id = create_fleet(client)
     vehicle = create_vehicle(client, fleet_id)

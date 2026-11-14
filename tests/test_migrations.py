@@ -73,6 +73,7 @@ def test_assignment_migration_backfills_current_device_links(
         "alerts",
         "telemetry_dead_letters",
         "users",
+        "refresh_tokens",
         "diagnostic_profiles",
     }.issubset(
         set(inspect(engine).get_table_names())

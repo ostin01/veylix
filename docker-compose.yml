@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_DB: veylix
-      POSTGRES_USER: veylix
-      POSTGRES_PASSWORD: veylix
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U veylix -d veylix"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -19,7 +19,7 @@ services:
     build: .
     command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
     environment:
-      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,10 +29,12 @@ services:
     build: .
     command: ["python", "-m", "auth.bootstrap"]
     environment:
-      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run make prepare-local-security or configure JWT_SECRET_KEY}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
+      JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:?Configure BOOTSTRAP_ADMIN_USERNAME}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Configure BOOTSTRAP_ADMIN_PASSWORD}
+    secrets:
+      - jwt_secret_key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -41,10 +43,12 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run make prepare-local-security or configure JWT_SECRET_KEY}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
+      JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
     ports:
       - "8000:8000"
+    secrets:
+      - jwt_secret_key
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -63,7 +67,7 @@ services:
     build: .
     command: ["python", "-m", "telemetry.consumer"]
     environment:
-      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
       MQTT_HOST: mqtt
       MQTT_PORT: 8883
       MQTT_USERNAME: veylix-consumer
@@ -118,7 +122,7 @@ services:
       context: .
       dockerfile: vehicle-simulator/Dockerfile
     environment:
-      DATABASE_URL: postgresql+psycopg://veylix:veylix@postgres:5432/veylix
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
       MQTT_HOST: mqtt
       MQTT_PORT: 8883
       MQTT_USERNAME: veylix-simulator
@@ -143,6 +147,8 @@ volumes:
   mqtt_data:
 
 secrets:
+  jwt_secret_key:
+    file: ${JWT_SECRET_KEY_FILE:?Set JWT_SECRET_KEY_FILE}
   mqtt_simulator_password:
     file: ${MQTT_SIMULATOR_PASSWORD_FILE:-./secrets/mqtt/simulator_password}
   mqtt_consumer_password:

@@ -12,12 +12,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    raise RuntimeError("DATABASE_URL must be configured before running migrations")
 config.set_main_option(
     "sqlalchemy.url",
-    os.getenv(
-        "DATABASE_URL",
-        "postgresql+psycopg://veylix:veylix@localhost:5432/veylix",
-    ).replace("%", "%%"),
+    database_url.replace("%", "%%"),
 )
 target_metadata = Base.metadata
 

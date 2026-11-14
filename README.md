@@ -18,6 +18,16 @@ also stored there. Keep both `.env` and `secrets/` private. The bootstrap step
 creates the initial admin only when no administrator exists, so rerunning the
 stack does not reset an existing account's password.
 
+This Compose setup and the credentials in `.env.example` are for local
+development only. PostgreSQL settings are required Compose variables rather
+than values embedded in `docker-compose.yml`. For production, inject
+`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `DATABASE_URL_DOCKER`
+from your deployment platform's secret/configuration manager, and mount the
+JWT key at the path supplied by `JWT_SECRET_KEY_FILE`. Keep the database URL
+consistent with the PostgreSQL credentials; use a URL-safe, high-entropy
+database password or correctly URL-encode it. Do not deploy with the
+`.env.example` values or commit production secrets.
+
 ### API authentication and roles
 
 Except for `/`, `/health`, and `POST /api/v1/auth/token`, API endpoints require
@@ -30,8 +40,12 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/token \
   -d '{"username":"admin","password":"<your-local-admin-password>"}'
 ```
 
-Send the returned `access_token` as `Authorization: Bearer <token>`. Tokens
-expire after 15 minutes; request another token by logging in again. Use
+Send the returned `access_token` as `Authorization: Bearer <token>`. Access
+tokens expire after 15 minutes. The response also includes a 30-day refresh
+token; exchange it at `POST /api/v1/auth/refresh` to rotate the refresh token
+and obtain a new access token. Refresh tokens are single-use: reuse of a
+rotated token revokes its token family. Store tokens securely in the client
+and call `POST /api/v1/auth/logout` to revoke a refresh token. Use
 `GET /api/v1/auth/me` to inspect the authenticated account.
 
 | Role | Permissions |
@@ -43,6 +57,16 @@ expire after 15 minutes; request another token by logging in again. Use
 Administrators create accounts with `POST /api/v1/users`. Account passwords
 are stored as Argon2 hashes. Authorization checks the current account and role
 in the database, so inactive accounts cannot continue using existing tokens.
+Users change their own password with `POST /api/v1/auth/password`, providing
+the current password and a new password of at least 12 characters. Changing
+it revokes refresh tokens and immediately invalidates existing access tokens;
+log in again with the new password.
+
+Administrators deactivate or reactivate accounts with
+`PATCH /api/v1/users/{user_id}/status` and `{"is_active": false}` or
+`{"is_active": true}`. Deactivation revokes refresh tokens and invalidates
+access tokens immediately. An administrator cannot deactivate their own
+account.
 
 ### Fleet and device setup
 
@@ -184,9 +208,13 @@ roles; write access is restricted as described above.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/auth/token` | Exchange credentials for a 15-minute bearer token |
+| `POST` | `/api/v1/auth/token` | Exchange credentials for access and refresh tokens |
+| `POST` | `/api/v1/auth/refresh` | Rotate a refresh token |
+| `POST` | `/api/v1/auth/logout` | Revoke a refresh token |
+| `POST` | `/api/v1/auth/password` | Change the current account password |
 | `GET` | `/api/v1/auth/me` | Get the current account |
 | `GET`, `POST` | `/api/v1/users` | List accounts (admin); create an account (admin) |
+| `PATCH` | `/api/v1/users/{user_id}/status` | Deactivate or reactivate an account (admin) |
 | `GET`, `POST` | `/api/v1/fleets` | List fleets; create a fleet |
 | `GET`, `PATCH`, `DELETE` | `/api/v1/fleets/{fleet_id}` | Get, update, or delete a fleet |
 | `POST` | `/api/v1/vehicles` | Register a vehicle |

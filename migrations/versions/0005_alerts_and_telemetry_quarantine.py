@@ -1,6 +1,6 @@
 """Persist telemetry alerts and quarantined messages.
 
-Revision ID: 0005_alerts_and_telemetry_quarantine
+Revision ID: 0005_alerts_telemetry_dlq
 Revises: 0004_telemetry_readings
 """
 from typing import Sequence
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0005_alerts_and_telemetry_quarantine"
+revision: str = "0005_alerts_telemetry_dlq"
 down_revision: str | None = "0004_telemetry_readings"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

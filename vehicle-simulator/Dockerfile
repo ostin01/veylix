@@ -15,6 +15,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY db.py enums.py models.py ./
 COPY schemas ./schemas
 COPY simulator ./simulator
+COPY telemetry ./telemetry
 
 RUN useradd --create-home --uid 10001 app
 USER app

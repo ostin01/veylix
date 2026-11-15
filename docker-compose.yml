@@ -17,7 +17,8 @@ services:
 
   migrate:
     build: .
-    command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
+    command: ["alembic", "upgrade", "head"]
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
     depends_on:
@@ -27,6 +28,7 @@ services:
 
   bootstrap:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "auth.bootstrap"]
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
@@ -42,6 +44,7 @@ services:
 
   api:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
@@ -65,6 +68,7 @@ services:
 
   telemetry-consumer:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "telemetry.consumer"]
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
@@ -94,8 +98,15 @@ services:
       - |
         simulator_password="$$(cat /run/secrets/mqtt_simulator_password)"
         consumer_password="$$(cat /run/secrets/mqtt_consumer_password)"
+        rm -f /mosquitto/data/passwordfile
         printf '%s\n%s\n' "$$simulator_password" "$$simulator_password" | mosquitto_passwd -c /mosquitto/data/passwordfile veylix-simulator
         printf '%s\n%s\n' "$$consumer_password" "$$consumer_password" | mosquitto_passwd /mosquitto/data/passwordfile veylix-consumer
+        cp /mosquitto/config/acl /mosquitto/data/acl
+        cp /run/secrets/mqtt_server_cert /mosquitto/data/server.crt
+        cp /run/secrets/mqtt_server_key /mosquitto/data/server.key
+        chown mosquitto:mosquitto /mosquitto/data/acl /mosquitto/data/passwordfile /mosquitto/data/server.crt /mosquitto/data/server.key
+        chmod 600 /mosquitto/data/acl /mosquitto/data/passwordfile /mosquitto/data/server.key
+        chmod 644 /mosquitto/data/server.crt
         exec mosquitto -c /mosquitto/config/mosquitto.conf
     ports:
       - "127.0.0.1:8883:8883"
@@ -121,6 +132,7 @@ services:
     build:
       context: .
       dockerfile: vehicle-simulator/Dockerfile
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
       MQTT_HOST: mqtt
@@ -128,6 +140,8 @@ services:
       MQTT_USERNAME: veylix-simulator
       MQTT_PASSWORD_FILE: /run/secrets/mqtt_simulator_password
       MQTT_TLS_CA_CERT: /run/secrets/mqtt_ca_cert
+      SIMULATOR_CENTER_LATITUDE: ${SIMULATOR_CENTER_LATITUDE:-52.3676}
+      SIMULATOR_CENTER_LONGITUDE: ${SIMULATOR_CENTER_LONGITUDE:-4.9041}
       SIMULATOR_PUBLISH_INTERVAL_SECONDS: 5
       SIMULATOR_RANDOM_SEED: 42
     secrets:

@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import (
     BaseModel,
     ConfigDict,
+    EmailStr,
     Field,
     SecretStr,
     StringConstraints,
@@ -23,10 +24,12 @@ Username = Annotated[
         pattern=r"^[a-z0-9][a-z0-9_.-]*$",
     ),
 ]
+EmailUsername = Annotated[EmailStr, Field(max_length=50)]
+AccountIdentifier = Username | EmailUsername
 
 
 class LoginRequest(BaseModel):
-    username: Username
+    username: AccountIdentifier
     password: SecretStr = Field(min_length=1, max_length=128)
 
     @field_validator("username", mode="before")
@@ -57,7 +60,7 @@ class UserStatusUpdate(BaseModel):
 
 
 class UserCreate(BaseModel):
-    username: Username
+    username: AccountIdentifier
     password: SecretStr = Field(min_length=12, max_length=128)
     role: UserRole
 

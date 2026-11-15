@@ -189,6 +189,30 @@ def test_authentication_and_role_permissions(client: TestClient) -> None:
     )
 
 
+def test_email_address_can_be_used_as_username_and_login_identifier(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/v1/users",
+        json={
+            "username": "AustinPaul606@Gmail.com",
+            "password": "a-strong-email-account-password",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["username"] == "austinpaul606@gmail.com"
+
+    login = client.post(
+        "/api/v1/auth/token",
+        json={
+            "username": "AUSTINPAUL606@GMAIL.COM",
+            "password": "a-strong-email-account-password",
+        },
+    )
+    assert login.status_code == 200
+
+
 def test_refresh_tokens_rotate_and_reuse_revokes_the_token_family(
     client: TestClient,
 ) -> None:

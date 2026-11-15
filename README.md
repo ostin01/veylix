@@ -57,6 +57,10 @@ and call `POST /api/v1/auth/logout` to revoke a refresh token. Use
 Administrators create accounts with `POST /api/v1/users`. Account passwords
 are stored as Argon2 hashes. Authorization checks the current account and role
 in the database, so inactive accounts cannot continue using existing tokens.
+The `username` field can be either a 3-50 character username or a valid email
+address (up to 50 characters); email addresses are normalized to lowercase and
+can be used as the login identifier. There is no separate email field or
+public self-signup endpoint.
 Users change their own password with `POST /api/v1/auth/password`, providing
 the current password and a new password of at least 12 characters. Changing
 it revokes refresh tokens and immediately invalidates existing access tokens;
@@ -76,6 +80,11 @@ requests for vehicles use the default diagnostic profile for their vehicle
 type unless a compatible `diagnostic_profile_id` is supplied. The simulator
 discovers active device assignments and publishes synthetic telemetry every
 five seconds.
+By default, simulated vehicle starting positions are clustered around
+Amsterdam (latitude `52.3676`, longitude `4.9041`). Override
+`SIMULATOR_CENTER_LATITUDE` and `SIMULATOR_CENTER_LONGITUDE` to set another
+simulation center. Production devices are not repositioned: their reported
+GPS coordinates are stored and returned as received.
 
 ## MQTT security and telemetry contract
 
@@ -84,6 +93,8 @@ access and plaintext MQTT are disabled. The simulator and consumer have
 separate credentials and broker ACLs: the simulator may publish telemetry,
 while the consumer may only subscribe. Compose mounts the credentials and
 certificates from files under the ignored `secrets/` directory.
+The local setup records the current WSL user/group IDs in `.env` so the
+non-root API and telemetry containers can read mode-restricted secret files.
 
 The version 1 telemetry topic is:
 

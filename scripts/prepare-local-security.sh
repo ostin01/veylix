@@ -19,6 +19,8 @@ set_env_if_blank() {
 set_env_if_blank POSTGRES_DB veylix
 set_env_if_blank POSTGRES_USER veylix
 set_env_if_blank POSTGRES_PASSWORD veylix
+set_env_if_blank APP_UID "$(id -u)"
+set_env_if_blank APP_GID "$(id -g)"
 postgres_db=$(grep '^POSTGRES_DB=' .env | cut -d= -f2-)
 postgres_user=$(grep '^POSTGRES_USER=' .env | cut -d= -f2-)
 postgres_password=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)

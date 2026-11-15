@@ -7,6 +7,13 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 
+DEFAULT_CENTER_LATITUDE = 52.3676
+DEFAULT_CENTER_LONGITUDE = 4.9041
+_GRID_COLUMNS = 10
+_GRID_LATITUDE_SPACING = 0.002
+_GRID_LONGITUDE_SPACING = 0.003
+
+
 @dataclass
 class SimulatedVehicle:
     fleet_id: UUID
@@ -104,24 +111,33 @@ def create_simulated_vehicles(
         tuple[UUID, UUID, UUID, tuple[float, float] | None]
     ],
     seed: int,
+    center_latitude: float = DEFAULT_CENTER_LATITUDE,
+    center_longitude: float = DEFAULT_CENTER_LONGITUDE,
 ) -> list[SimulatedVehicle]:
     if len(assignments) > 100:
         raise ValueError("number of active assignments must not exceed 100")
     if len({device_id for device_id, _, _, _ in assignments}) != len(assignments):
         raise ValueError("each device can only have one active vehicle assignment")
+    if not -90 <= center_latitude <= 90:
+        raise ValueError("center_latitude must be between -90 and 90")
+    if not -180 <= center_longitude <= 180:
+        raise ValueError("center_longitude must be between -180 and 180")
 
     vehicles = []
     for index, (device_id, vehicle_id, fleet_id, battery_voltage_range) in enumerate(
         assignments
     ):
+        row, column = divmod(index, _GRID_COLUMNS)
         vehicles.append(
             SimulatedVehicle(
                 fleet_id=fleet_id,
                 vehicle_id=vehicle_id,
                 device_id=device_id,
                 battery_voltage_range=battery_voltage_range,
-                latitude=37.7749 + index * 0.01,
-                longitude=-122.4194 - index * 0.01,
+                latitude=center_latitude
+                + (row - 4.5) * _GRID_LATITUDE_SPACING,
+                longitude=center_longitude
+                + (column - 4.5) * _GRID_LONGITUDE_SPACING,
                 seed=seed + index,
             )
         )

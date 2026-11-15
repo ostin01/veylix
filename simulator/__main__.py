@@ -9,7 +9,12 @@ from uuid import UUID
 import paho.mqtt.client as mqtt
 
 from simulator.registry import get_active_assignments
-from simulator.vehicle import SimulatedVehicle, create_simulated_vehicles
+from simulator.vehicle import (
+    DEFAULT_CENTER_LATITUDE,
+    DEFAULT_CENTER_LONGITUDE,
+    SimulatedVehicle,
+    create_simulated_vehicles,
+)
 from telemetry.mqtt_config import configure_mqtt_client
 from telemetry.protocol import telemetry_topic
 from telemetry.schemas import TelemetryMessage
@@ -33,6 +38,12 @@ def main() -> None:
     seed = int(os.getenv("SIMULATOR_RANDOM_SEED", "42"))
     if interval <= 0:
         raise ValueError("SIMULATOR_PUBLISH_INTERVAL_SECONDS must be positive")
+    center_latitude = float(
+        os.getenv("SIMULATOR_CENTER_LATITUDE", str(DEFAULT_CENTER_LATITUDE))
+    )
+    center_longitude = float(
+        os.getenv("SIMULATOR_CENTER_LONGITUDE", str(DEFAULT_CENTER_LONGITUDE))
+    )
 
     vehicles_by_assignment: dict[tuple[UUID, UUID], SimulatedVehicle] = {}
     client = mqtt.Client(
@@ -67,7 +78,12 @@ def main() -> None:
                     or vehicle.battery_voltage_range != battery_voltage_range
                 ):
                     new_assignments.append(assignment)
-            for vehicle in create_simulated_vehicles(new_assignments, seed):
+            for vehicle in create_simulated_vehicles(
+                new_assignments,
+                seed,
+                center_latitude=center_latitude,
+                center_longitude=center_longitude,
+            ):
                 vehicles_by_assignment[(vehicle.device_id, vehicle.vehicle_id)] = vehicle
 
             active_assignment_keys = {

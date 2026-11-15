@@ -72,11 +72,32 @@ def test_simulator_uses_registered_device_vehicle_assignments() -> None:
         )
         for vehicle in vehicles
     ] == assignments
+    assert vehicles[0].latitude == pytest.approx(52.3586)
+    assert vehicles[0].longitude == pytest.approx(4.8906)
+    assert all(52.35 < vehicle.latitude < 52.39 for vehicle in vehicles)
+    assert all(4.88 < vehicle.longitude < 4.93 for vehicle in vehicles)
     with pytest.raises(ValueError):
         create_simulated_vehicles(
             [(UUID(int=1), UUID(int=11), UUID(int=21), (300, 450))] * 101,
             seed=0,
         )
+
+
+def test_simulator_supports_configured_center_and_validates_coordinates() -> None:
+    assignment = [(UUID(int=1), UUID(int=11), UUID(int=21), None)]
+    vehicle = create_simulated_vehicles(
+        assignment,
+        seed=0,
+        center_latitude=51.5072,
+        center_longitude=-0.1276,
+    )[0]
+    assert vehicle.latitude == pytest.approx(51.4982)
+    assert vehicle.longitude == pytest.approx(-0.1411)
+
+    with pytest.raises(ValueError, match="center_latitude"):
+        create_simulated_vehicles(assignment, seed=0, center_latitude=91)
+    with pytest.raises(ValueError, match="center_longitude"):
+        create_simulated_vehicles(assignment, seed=0, center_longitude=181)
 
 
 def test_simulator_rejects_duplicate_device_assignments() -> None:

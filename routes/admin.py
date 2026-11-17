@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from auth.principal import Principal
@@ -75,14 +76,7 @@ def get_admin_system(db: Session = Depends(get_db)) -> dict[str, object]:
     """Return API/database health and the resource totals shown in the console."""
     try:
         db.execute(text("SELECT 1"))
-        database_status = "healthy"
-    except Exception:
-        database_status = "unavailable"
-
-    return {
-        "api": "healthy",
-        "database": database_status,
-        "counts": {
+        counts = {
             "fleets": db.scalar(select(func.count()).select_from(Fleet)) or 0,
             "vehicles": db.scalar(select(func.count()).select_from(Vehicle)) or 0,
             "devices": db.scalar(select(func.count()).select_from(Device)) or 0,
@@ -92,7 +86,17 @@ def get_admin_system(db: Session = Depends(get_db)) -> dict[str, object]:
             "telemetry_readings": db.scalar(
                 select(func.count()).select_from(TelemetryReading)
             ) or 0,
-        },
+        }
+        database_status = "healthy"
+    except SQLAlchemyError:
+        db.rollback()
+        database_status = "unavailable"
+        counts = None
+
+    return {
+        "api": "healthy",
+        "database": database_status,
+        "counts": counts,
     }
 
 

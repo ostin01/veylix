@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from routes import (
+    admin,
     alerts,
     auth,
     device,
@@ -33,3 +34,4 @@ app.include_router(vehicle.router)
 app.include_router(device.router)
 app.include_router(telemetry.router)
 app.include_router(alerts.router)
+app.include_router(admin.router)

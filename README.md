@@ -178,6 +178,30 @@ latitude, longitude, speed, and battery state-of-charge readings. Each
 available signal includes its value, unit, and observation time; missing
 signals are `null`.
 
+## Admin operations endpoints
+
+The admin console endpoints require an administrator bearer token. They provide a
+database/resource summary, a preview-only scenario simulator, recent preview
+events, and an SSE stream:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/system` | API/database health and fleet resource totals |
+| `POST` | `/api/v1/admin/simulations` | Add a clearly marked preview event |
+| `GET` | `/api/v1/admin/events?limit=30` | List recent preview events |
+| `GET` | `/api/v1/admin/events/stream` | Stream preview events as Server-Sent Events |
+| `DELETE` | `/api/v1/admin/events/simulated` | Clear preview events |
+
+A simulation request has the shape
+`{"vehicle_id":"<vehicle UUID>","scenario":"vehicle_moves"}`. Supported
+scenarios are `vehicle_moves`, `battery_drops`, `overspeed`,
+`device_offline`, `device_reconnects`, and `engine_fault`. Responses and
+stream events include `simulated: true`, the triggering administrator, and an
+outcome. These are safe UI preview events: they do not publish MQTT, write
+telemetry or alerts, change vehicle/device state, or issue vehicle commands.
+The event buffer is in memory, holds up to 100 events, and is local to one API
+process; it is cleared when that process restarts.
+
 ## Run the API directly
 
 For the API without the simulator or MQTT consumer, install dependencies and
@@ -234,6 +258,10 @@ roles; write access is restricted as described above.
 | `GET` | `/api/v1/vehicles/{vehicle_id}/telemetry` | List vehicle telemetry |
 | `GET` | `/api/v1/vehicles/{vehicle_id}/health` | Get derived vehicle health indicators |
 | `GET` | `/api/v1/telemetry/latest` | Get each vehicle's latest selected readings |
+| `GET` | `/api/v1/admin/system` | Get admin system health and resource totals |
+| `POST` | `/api/v1/admin/simulations` | Add a safe preview scenario event (admin) |
+| `GET` | `/api/v1/admin/events`, `/api/v1/admin/events/stream` | List or stream preview events (admin) |
+| `DELETE` | `/api/v1/admin/events/simulated` | Clear preview events (admin) |
 | `GET` | `/api/v1/telemetry/dead-letters` | List quarantined messages (admin) |
 | `POST`, `DELETE` | `/api/v1/telemetry/dead-letters/{id}/replay`, `/api/v1/telemetry/dead-letters/{id}` | Replay or delete a quarantined message (admin) |
 | `GET` | `/api/v1/diagnostic-profiles` | List diagnostic profiles |

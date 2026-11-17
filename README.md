@@ -252,3 +252,13 @@ roles; write access is restricted as described above.
 `make down-all` preserves PostgreSQL and MQTT data volumes. To remove the
 database, broker persistence, and all their data, run
 `docker compose down --volumes`.
+
+## Real-time event stream
+
+The API exposes authenticated Server-Sent Events at `GET /api/v1/events/stream`. The API and MQTT telemetry consumer publish compact, post-commit domain events to Redis Pub/Sub (`veylix:events:v1`); Redis is shared by the API and consumer containers in Compose. The frontend opens one same-origin stream after its authenticated session loads. Its Next.js API proxy passes the response body through without buffering and continues to keep bearer tokens in server-side cookies/headers rather than URL parameters.
+
+Events include `telemetry.received`, `vehicle.location.updated`, `vehicle.health.updated`, `vehicle.status.updated`, `device.status.updated`, `device.connected`, `device.disconnected`, `alert.created`, `alert.updated`, `alert.acknowledged`, `alert.resolved`, and admin simulation events. Redis Pub/Sub is transient and does not replay messages. The browser reconnects with bounded exponential backoff and refreshes active REST snapshots after reconnect. Publishing failures are logged and do not roll back committed telemetry; clients recover at their next snapshot refresh/reconnect.
+
+Set `REDIS_URL` for local backend processes and `REDIS_URL_DOCKER` for Compose (defaults are in `.env.example`). Start the full stack with `docker compose up --build`; run backend tests with `uv run pytest`, and frontend checks with `npm test`, `npm run typecheck`, and `npm run build` from `veylix-web-app`.
+
+The current backend has global fleet access for all authenticated read roles and has no organization/tenant membership model. The event stream therefore enforces the existing admin/operator/viewer role rules and does not claim organization-level isolation. Events carry `fleet_id`; tenant-specific subscriptions require adding tenant ownership to the data and principal models first. Redis Pub/Sub also has a post-commit publish crash window; a durable outbox is a future reliability improvement if guaranteed delivery becomes a requirement.

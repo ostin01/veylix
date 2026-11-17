@@ -8,6 +8,7 @@ class LatestTelemetrySignal(BaseModel):
     value: float | None
     unit: str
     observed_at: datetime
+    is_simulated: bool
 
 
 class VehicleLatestTelemetry(BaseModel):

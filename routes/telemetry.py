@@ -43,6 +43,7 @@ def get_latest_telemetry(db: Session = Depends(get_db)) -> LatestTelemetryRespon
             TelemetryReading.value_numeric.label("value_numeric"),
             TelemetryReading.unit.label("unit"),
             TelemetryReading.observed_at.label("observed_at"),
+            TelemetryReading.is_simulated.label("is_simulated"),
             func.row_number()
             .over(
                 partition_by=(
@@ -66,6 +67,7 @@ def get_latest_telemetry(db: Session = Depends(get_db)) -> LatestTelemetryRespon
             ranked_readings.c.value_numeric,
             ranked_readings.c.unit,
             ranked_readings.c.observed_at,
+            ranked_readings.c.is_simulated,
         )
         .outerjoin(
             ranked_readings,
@@ -88,6 +90,7 @@ def get_latest_telemetry(db: Session = Depends(get_db)) -> LatestTelemetryRespon
                 value=row.value_numeric,
                 unit=row.unit,
                 observed_at=row.observed_at,
+                is_simulated=row.is_simulated,
             )
 
     return LatestTelemetryResponse(

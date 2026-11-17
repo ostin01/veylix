@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 
 from routes import (
+    admin,
     alerts,
     auth,
     device,
+    events,
     diagnostic_profiles,
     fleet,
     health,
@@ -25,6 +27,7 @@ def read_root():
     return {"Hello": "World"}
 
 app.include_router(health.router)
+app.include_router(events.router)
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(diagnostic_profiles.router)
@@ -33,3 +36,4 @@ app.include_router(vehicle.router)
 app.include_router(device.router)
 app.include_router(telemetry.router)
 app.include_router(alerts.router)
+app.include_router(admin.router)

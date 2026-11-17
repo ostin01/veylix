@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -267,6 +268,7 @@ class TelemetryReading(Base):
     )
     schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
     message_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class Alert(Base):
@@ -279,6 +281,7 @@ class Alert(Base):
     device_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("devices.id", ondelete="RESTRICT"), nullable=False
     )
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     code: Mapped[str] = mapped_column(String(64), nullable=False)
     signal_name: Mapped[str] = mapped_column(String(50), nullable=False)
     severity: Mapped[AlertSeverity] = mapped_column(
@@ -314,6 +317,7 @@ Index(
     "uq_alerts_active_vehicle_code",
     Alert.vehicle_id,
     Alert.code,
+    Alert.is_simulated,
     unique=True,
     postgresql_where=Alert.resolved_at.is_(None),
     sqlite_where=Alert.resolved_at.is_(None),

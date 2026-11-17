@@ -10,7 +10,8 @@ from auth.principal import Principal
 from auth.security import require_roles
 from db import get_db
 from enums import AlertSeverity, UserRole
-from models import Alert, utc_now
+from events import publish_event
+from models import Alert, Vehicle, utc_now
 from schemas.alerts import AlertListResponse, AlertRead, AlertSummary
 from schemas.common import PaginationMeta
 
@@ -132,6 +133,19 @@ def acknowledge_alert(
     if alert.acknowledged_at is None:
         alert.acknowledged_at = utc_now()
         alert.acknowledged_by_id = principal.user_id
+        vehicle = db.get(Vehicle, alert.vehicle_id)
         db.commit()
         db.refresh(alert)
+        if vehicle is not None:
+            publish_event(
+                "alert.acknowledged",
+                fleet_id=vehicle.fleet_id,
+                vehicle_id=vehicle.id,
+                device_id=alert.device_id,
+                data={
+                    "alert_id": str(alert.id),
+                    "code": alert.code,
+                    "acknowledged_at": alert.acknowledged_at.isoformat(),
+                },
+            )
     return alert

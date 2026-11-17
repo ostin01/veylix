@@ -42,11 +42,21 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   api:
     build: .
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
     ports:
       - "8000:8000"
@@ -55,6 +65,8 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -72,6 +84,7 @@ services:
     command: ["python", "-m", "telemetry.consumer"]
     environment:
       DATABASE_URL: ${DATABASE_URL_DOCKER:?Set DATABASE_URL_DOCKER}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       MQTT_HOST: mqtt
       MQTT_PORT: 8883
       MQTT_USERNAME: veylix-consumer
@@ -87,6 +100,8 @@ services:
       migrate:
         condition: service_completed_successfully
       mqtt:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -6,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from enums import DeviceConnectionStatus
+from events import EventType, publish_event
 from models import (
     Alert,
     DiagnosticProfile,
@@ -14,7 +16,7 @@ from models import (
     TelemetryReading,
     Vehicle,
 )
-from telemetry.constants import SIGNAL_UNITS
+from telemetry.constants import HEALTH_SIGNAL_NAMES, SIGNAL_UNITS
 from telemetry.health import evaluate_diagnostics
 from telemetry.protocol import parse_telemetry_topic
 from telemetry.schemas import TelemetryMessage
@@ -30,6 +32,20 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _alert_event_data(alert: Alert) -> dict[str, Any]:
+    return {
+        "alert_id": str(alert.id),
+        "code": alert.code,
+        "severity": alert.severity.value,
+        "message": alert.message,
+        "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
+        "simulated": alert.is_simulated,
+        "acknowledged_at": (
+            alert.acknowledged_at.isoformat() if alert.acknowledged_at else None
+        ),
+    }
+
+
 def _update_vehicle_alerts(
     db: Session,
     vehicle: Vehicle,
@@ -37,7 +53,9 @@ def _update_vehicle_alerts(
     message: TelemetryMessage,
     received_at: datetime,
     thresholds: dict[str, dict[str, float]],
-) -> None:
+    simulated: bool,
+) -> tuple[bool, list[tuple[EventType, Alert]]]:
+    """Update existing diagnostic alerts and return their post-commit events."""
     latest_observed_at = db.scalar(
         select(func.max(TelemetryReading.observed_at)).where(
             TelemetryReading.vehicle_id == vehicle.id
@@ -46,43 +64,47 @@ def _update_vehicle_alerts(
     if latest_observed_at is not None and _as_utc(message.observed_at) < _as_utc(
         latest_observed_at
     ):
-        return
+        return False, []
 
     findings = evaluate_diagnostics(message.signals.model_dump(), thresholds)
     findings_by_code = {finding.code: finding for finding in findings}
     active_alerts = db.scalars(
         select(Alert).where(
             Alert.vehicle_id == vehicle.id,
+            Alert.is_simulated.is_(simulated),
             Alert.resolved_at.is_(None),
         )
     ).all()
     alerts_by_code = {alert.code: alert for alert in active_alerts}
+    changed: list[tuple[EventType, Alert]] = []
 
     for code, alert in alerts_by_code.items():
         if code not in findings_by_code and _as_utc(
             alert.last_observed_at
         ) <= _as_utc(message.observed_at):
             alert.resolved_at = received_at
+            changed.append(("alert.resolved", alert))
 
     for code, finding in findings_by_code.items():
         alert = alerts_by_code.get(code)
         if alert is None:
-            db.add(
-                Alert(
-                    vehicle_id=vehicle.id,
-                    device_id=device.id,
-                    code=finding.code,
-                    signal_name=finding.signal_name,
-                    severity=finding.severity,
-                    message=finding.message,
-                    value_numeric=finding.value_numeric,
-                    value_text=finding.value_text,
-                    unit=finding.unit,
-                    threshold=finding.threshold,
-                    first_observed_at=message.observed_at,
-                    last_observed_at=message.observed_at,
-                )
+            alert = Alert(
+                vehicle_id=vehicle.id,
+                device_id=device.id,
+                is_simulated=simulated,
+                code=finding.code,
+                signal_name=finding.signal_name,
+                severity=finding.severity,
+                message=finding.message,
+                value_numeric=finding.value_numeric,
+                value_text=finding.value_text,
+                unit=finding.unit,
+                threshold=finding.threshold,
+                first_observed_at=message.observed_at,
+                last_observed_at=message.observed_at,
             )
+            db.add(alert)
+            changed.append(("alert.created", alert))
         elif _as_utc(alert.last_observed_at) <= _as_utc(message.observed_at):
             alert.severity = finding.severity
             alert.message = finding.message
@@ -91,6 +113,9 @@ def _update_vehicle_alerts(
             alert.unit = finding.unit
             alert.threshold = finding.threshold
             alert.last_observed_at = message.observed_at
+            changed.append(("alert.updated", alert))
+
+    return True, changed
 
 
 def parse_telemetry(payload: bytes) -> TelemetryMessage:
@@ -102,7 +127,7 @@ def parse_telemetry(payload: bytes) -> TelemetryMessage:
     return message
 
 
-def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
+def ingest_telemetry(db: Session, topic: str, payload: bytes, *, simulated: bool = False) -> int:
     message = parse_telemetry(payload)
     try:
         topic_fleet_id, topic_vehicle_id = parse_telemetry_topic(topic)
@@ -149,8 +174,9 @@ def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
         return 0
 
     received_at = datetime.now(timezone.utc)
+    signals = message.signals.model_dump()
     readings = []
-    for signal_name, value in message.signals.model_dump().items():
+    for signal_name, value in signals.items():
         is_text_value = isinstance(value, str)
         readings.append(
             TelemetryReading(
@@ -164,42 +190,133 @@ def ingest_telemetry(db: Session, topic: str, payload: bytes) -> int:
                 received_at=received_at,
                 schema_version=message.schema_version,
                 message_id=message.message_id,
+                is_simulated=simulated,
             )
         )
 
-    db.add_all(readings)
-    _update_vehicle_alerts(
-        db,
-        vehicle,
-        device,
-        message,
-        received_at,
-        profile.thresholds,
-    )
-    device.connection_status = DeviceConnectionStatus.ONLINE
-    device.last_seen_at = received_at
-    offline_devices = db.scalar(
-        select(func.count())
-        .select_from(Device)
-        .where(
-            Device.vehicle_id == vehicle.id,
-            Device.id != device.id,
-            Device.connection_status == DeviceConnectionStatus.OFFLINE,
-        )
-    )
-    if offline_devices == 0:
-        offline_alerts = db.scalars(
-            select(Alert).where(
-                Alert.vehicle_id == vehicle.id,
-                Alert.code == "device_offline",
-                Alert.resolved_at.is_(None),
-            )
-        ).all()
-        for alert in offline_alerts:
-            alert.resolved_at = received_at
+    old_device_status = device.connection_status
+    pending_events: list[tuple[EventType, dict[str, Any]]] = []
     try:
+        db.add_all(readings)
+        is_latest, alert_changes = _update_vehicle_alerts(
+            db,
+            vehicle,
+            device,
+            message,
+            received_at,
+            profile.thresholds,
+            simulated,
+        )
+        db.flush()
+
+        for event_type, alert in alert_changes:
+            pending_events.append((event_type, _alert_event_data(alert)))
+
+        device.connection_status = DeviceConnectionStatus.ONLINE
+        device.last_seen_at = received_at
+        if old_device_status != DeviceConnectionStatus.ONLINE:
+            pending_events.append(
+                (
+                    "device.status.updated",
+                    {
+                        "connection_status": DeviceConnectionStatus.ONLINE.value,
+                        "last_seen_at": received_at.isoformat(),
+                    "simulated": simulated,
+                    },
+                )
+            )
+            pending_events.append(
+                (
+                    "device.connected",
+                    {
+                        "connection_status": DeviceConnectionStatus.ONLINE.value,
+                        "last_seen_at": received_at.isoformat(),
+                    "simulated": simulated,
+                    },
+                )
+            )
+
+        offline_devices = db.scalar(
+            select(func.count())
+            .select_from(Device)
+            .where(
+                Device.vehicle_id == vehicle.id,
+                Device.id != device.id,
+                Device.connection_status == DeviceConnectionStatus.OFFLINE,
+            )
+        )
+        if offline_devices == 0:
+            offline_alerts = db.scalars(
+                select(Alert).where(
+                    Alert.vehicle_id == vehicle.id,
+                    Alert.code == "device_offline",
+                    Alert.is_simulated.is_(simulated),
+                    Alert.resolved_at.is_(None),
+                )
+            ).all()
+            for alert in offline_alerts:
+                alert.resolved_at = received_at
+                pending_events.append(("alert.resolved", _alert_event_data(alert)))
+
         db.commit()
     except IntegrityError as error:
         db.rollback()
         raise TelemetryRejected("telemetry message was already ingested") from error
+
+    pending_events.append(
+        (
+            "telemetry.received",
+            {
+                "simulated": simulated,
+                "message_id": str(message.message_id),
+                "observed_at": message.observed_at.isoformat(),
+                "signal_names": list(signals),
+                "latest_signals": {
+                    name: {"value": signals[name], "unit": SIGNAL_UNITS[name], "observed_at": message.observed_at.isoformat(), "is_simulated": simulated}
+                    for name in ("latitude", "longitude", "speed_kmh", "battery_soc_percent")
+                    if is_latest and isinstance(signals.get(name), (int, float)) and not isinstance(signals.get(name), bool)
+                },
+            },
+        )
+    )
+
+    if is_latest:
+        latitude = signals.get("latitude")
+        longitude = signals.get("longitude")
+        numeric = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool)
+        if numeric(latitude) and numeric(longitude):
+            location = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "observed_at": message.observed_at.isoformat(),
+                "simulated": simulated,
+            }
+            for signal_name in ("speed_kmh", "battery_soc_percent"):
+                value = signals.get(signal_name)
+                if numeric(value):
+                    location[signal_name] = value
+            pending_events.append(("vehicle.location.updated", location))
+
+        changed_health_signals = sorted(set(signals).intersection(HEALTH_SIGNAL_NAMES))
+        if changed_health_signals:
+            pending_events.append(
+                (
+                    "vehicle.health.updated",
+                    {
+                        "observed_at": message.observed_at.isoformat(),
+                        "signal_names": changed_health_signals,
+                        "simulated": simulated,
+                    },
+                )
+            )
+
+    for event_type, data in pending_events:
+        publish_event(
+            event_type,
+            fleet_id=vehicle.fleet_id,
+            vehicle_id=vehicle.id,
+            device_id=device.id,
+            data=data,
+        )
+
     return len(readings)

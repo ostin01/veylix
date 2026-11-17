@@ -20,6 +20,7 @@ class TelemetryReadingRead(BaseModel):
     received_at: datetime
     schema_version: str
     message_id: UUID
+    is_simulated: bool
 
 
 class TelemetryReadingListResponse(BaseModel):

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from db import get_db
+from events import publish_event
 from auth.security import require_roles
 from enums import UserRole, VehicleType
 from models import (
@@ -338,6 +339,7 @@ def update_vehicle(
     if vehicle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
 
+    previous_status = vehicle.status
     changes = payload.model_dump(exclude_unset=True)
     fleet_id = changes.get("fleet_id")
     if fleet_id is not None and db.get(Fleet, fleet_id) is None:
@@ -355,6 +357,16 @@ def update_vehicle(
         setattr(vehicle, field, value)
     _commit_vehicle(db)
     db.refresh(vehicle)
+    if vehicle.status != previous_status:
+        publish_event(
+            "vehicle.status.updated",
+            fleet_id=vehicle.fleet_id,
+            vehicle_id=vehicle.id,
+            data={
+                "status": vehicle.status.value,
+                "previous_status": previous_status.value,
+            },
+        )
     return vehicle
 
 

@@ -11,6 +11,7 @@ class AlertRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    is_simulated: bool
     vehicle_id: UUID
     device_id: UUID
     code: str

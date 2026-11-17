@@ -13,11 +13,13 @@ from auth.security import hash_password
 from db import Base, get_db
 from enums import DeviceConnectionStatus, UserRole
 from main import app
+from routes import events as event_routes
 from models import Device, TelemetryReading, User
 from telemetry.connectivity import mark_stale_devices_offline
 from telemetry.consumer import store_dead_letter
 from telemetry.profile_defaults import seed_default_profiles
 from telemetry.service import TelemetryRejected, ingest_telemetry
+from telemetry import service as telemetry_service
 
 
 TEST_ADMIN_PASSWORD = "test-only-admin-password"
@@ -625,7 +627,7 @@ def test_device_duplicate_serial_and_invalid_assignments(client: TestClient) -> 
 
 
 def test_telemetry_is_validated_stored_idempotently_and_updates_device_status(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fleet_id = create_fleet(client)
     vehicle_id = create_vehicle(client, fleet_id)["id"]
@@ -1218,3 +1220,33 @@ def test_dead_letter_replay_ingests_and_removes_valid_message(
     assert client.get("/api/v1/telemetry/dead-letters").json()["pagination"][
         "total_items"
     ] == 0
+
+def test_event_stream_requires_auth_and_streams_for_read_roles(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_headers = dict(client.headers)
+    client.headers.pop("Authorization")
+    assert client.get("/api/v1/events/stream").status_code == 401
+    client.headers.update(admin_headers)
+    roles = []
+
+    async def fake_stream(_request, role):
+        roles.append(role)
+        yield ": connected\n\n"
+
+    monkeypatch.setattr(event_routes, "stream_events", fake_stream)
+    admin_response = client.get("/api/v1/events/stream")
+    assert admin_response.status_code == 200
+    assert admin_response.headers["content-type"].startswith("text/event-stream")
+    assert admin_response.headers["x-accel-buffering"] == "no"
+
+    created = client.post("/api/v1/users", json={
+        "username": "stream-viewer", "password": "a-strong-test-password", "role": "viewer",
+    })
+    assert created.status_code == 201
+    token = client.post("/api/v1/auth/token", json={
+        "username": "stream-viewer", "password": "a-strong-test-password",
+    }).json()["access_token"]
+    viewer_response = client.get("/api/v1/events/stream", headers={"Authorization": f"Bearer {token}"})
+    assert viewer_response.status_code == 200
+    assert roles == [UserRole.ADMIN, UserRole.VIEWER]
